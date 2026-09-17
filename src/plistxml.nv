@@ -1,0 +1,170 @@
+// plistxml — the XML form, over xml-nv.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// THE XML IS READ BY XML-NV AND NOT BY A SCANNER OF THIS PACKAGE'S OWN.
+// The property list document type is small — eleven element names, no
+// namespaces, no mixed content — and it would be easy to write a
+// scanner for it.  It would also be a second XML parser, with the same
+// escaping, entity, encoding and well-formedness decisions to get
+// wrong, sitting beside one that has already made them.  So this module
+// takes xml-nv's tree, and `from_document` is on the surface for the
+// caller that has already built one.
+//
+// THE DOCUMENT TYPE.  A property list file is an `<?xml?>` declaration,
+// the Apple DOCTYPE, and a `<plist version="1.0">` element with exactly
+// one child.  The eleven elements are `plist`, `dict`, `key`, `array`,
+// `string`, `integer`, `real`, `data`, `date`, `true` and `false`.
+//
+// THE ONE SHAPE RULE THE DOCUMENT TYPE CANNOT EXPRESS is that a
+// `<dict>`'s children alternate `<key>` and a value, starting with a
+// key.  A DTD can say a dict holds keys and values in any order; it
+// cannot say they alternate.  So every reader checks it by hand, and
+// `PlistBadDictShape` is this one's answer.
+//
+// TWO VALUES HAVE NO SPELLING HERE: a set and a UID exist in the binary
+// form and not in this document type.  The writer refuses them by name
+// rather than converting, and `plistvalue.xml_blockers` finds them
+// before the writer does.
+
+// Whether the text begins as an XML property list: an `<?xml?>`
+// declaration, a DOCTYPE, or a `<plist` element, after any leading
+// whitespace or byte-order mark.
+//
+// ```novo
+// use plistxml
+//
+// fn main() [io]
+//     println("${plistxml.is_xml("<?xml version=\"1.0\"?>")}")   // true
+// ```
+pub fn is_xml(text: Str) -> Bool []
+    todo("plist-nv.plistxml.is_xml")
+
+// The root value of an XML property list.
+//
+// `PlistBadXml` when the text is not well-formed XML, carrying xml-nv's
+// own sentence so a caller does not need that package's error type to
+// render it.
+//
+// ```novo
+// use plistxml
+//
+// fn main() [io]
+//     match plistxml.read("<plist version=\"1.0\"><true/></plist>")
+//         Ok(_)  => println("read")
+//         Err(e) => println(e.message())
+// ```
+pub fn read(text: Str) -> Result<PlistValue, PlistFault> []
+    todo("plist-nv.plistxml.read")
+
+// The same, from a tree xml-nv has already built.
+//
+// For the caller that parsed the file for another reason, and for one
+// that wants xml-nv's own recovery behaviour rather than this module's
+// refusal.
+pub fn from_document(doc: xmltree.XmlDocument) -> Result<PlistValue, PlistFault> []
+    todo("plist-nv.plistxml.from_document")
+
+// One value from an element of an xml-nv tree, by its index.
+//
+// What a caller reading a property list embedded inside a larger XML
+// document uses — a `<plist>` inside a provisioning profile, inside a
+// manifest — without cutting the text out first.
+pub fn value_at(doc: xmltree.XmlDocument, index: Int) -> Result<PlistValue, PlistFault> []
+    todo("plist-nv.plistxml.value_at")
+
+// The value as an XML property list, with the declaration, the DOCTYPE
+// and the `plist` element.
+//
+// Tabs for indentation and one child per line, which is what Apple's
+// own writer produces, so a file this package writes and a file
+// `plutil -convert xml1` writes differ only where the values do.
+//
+// `PlistNoXmlSpelling` when the value holds a set or a UID anywhere
+// inside it.
+//
+// ```novo
+// use plistvalue
+// use plistxml
+//
+// fn main() [io]
+//     match plistxml.write(plistvalue.dict())
+//         Ok(t)  => println(t)
+//         Err(e) => println(e.message())
+// ```
+pub fn write(v: PlistValue) -> Result<Str, PlistFault> []
+    todo("plist-nv.plistxml.write")
+
+// The value as the `plist` element alone, with no declaration and no
+// DOCTYPE.
+//
+// For embedding one property list inside another XML document, which is
+// what a provisioning profile and a launchd job description both do.
+pub fn write_fragment(v: PlistValue) -> Result<Str, PlistFault> []
+    todo("plist-nv.plistxml.write_fragment")
+
+// The Apple DOCTYPE line, exactly as every property list carries it.
+//
+// A function rather than a constant a caller retypes, and the thing a
+// test asserts against.
+//
+// ```novo
+// use plistxml
+//
+// fn main() [io]
+//     println(plistxml.doctype())
+// ```
+pub fn doctype() -> Str []
+    todo("plist-nv.plistxml.doctype")
+
+// The eleven element names the property list document type defines.
+//
+// `plist`, `dict`, `key`, `array`, `string`, `integer`, `real`, `data`,
+// `date`, `true`, `false`.  Exposed because a caller validating a file
+// against the document type before reading it needs the list, and
+// because a reader of this package should be able to check the claim.
+//
+// ```novo
+// use plistxml
+//
+// fn main() [io]
+//     println("${list.len(plistxml.element_names())}")   // 11
+// ```
+pub fn element_names() -> [Str] []
+    todo("plist-nv.plistxml.element_names")
+
+// A date's seconds as the ISO 8601 text a `<date>` element carries.
+//
+// `"2001-01-01T00:00:00Z"` for zero.  Always UTC with a `Z` and always
+// whole seconds, which is what Apple's writer produces — a property
+// list date has a fractional part in the binary form and the XML form
+// has nowhere to put it, and that loss is named here rather than
+// discovered on a round trip.
+//
+// ```novo
+// use plistxml
+//
+// fn main() [io]
+//     println(plistxml.date_text(0.0))   // 2001-01-01T00:00:00Z
+// ```
+pub fn date_text(reference_seconds: Float) -> Str []
+    todo("plist-nv.plistxml.date_text")
+
+// The seconds an ISO 8601 `<date>` text denotes, counted from the
+// reference instant.
+//
+// `PlistBadText` for text that is not that shape.  A zone offset other
+// than `Z` is accepted and converted, because files in the wild carry
+// them.
+//
+// ```novo
+// use plistxml
+//
+// fn main() [io]
+//     match plistxml.date_seconds("2001-01-01T00:00:00Z")
+//         Ok(s)  => println("${s}")   // 0
+//         Err(e) => println(e.message())
+// ```
+pub fn date_seconds(text: Str) -> Result<Float, PlistFault> []
+    todo("plist-nv.plistxml.date_seconds")

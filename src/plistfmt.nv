@@ -1,0 +1,124 @@
+// plistfmt — which form a file is in, and the one call that reads
+// either.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// WHY THIS MODULE EXISTS.  A property list on disk is in one of two
+// forms and its name does not say which: `Info.plist` is XML in one
+// application bundle and binary in the next, and a tool that guessed by
+// extension would be wrong regularly.  The two are told apart by their
+// first bytes and nothing else, which is one function, and every
+// consumer would otherwise write it.
+//
+// CONVERSION IS A READ AND A WRITE, and it is named because the
+// interesting part is what it refuses.  A binary file holding a set or
+// a UID has no XML form, so `convert` answers `PlistNoXmlSpelling` with
+// the path of the first value that blocks it rather than producing a
+// file that lost something.
+
+// Which form a property list is in.
+//
+// ```novo
+// use plistfmt
+//
+// fn main() [io]
+//     println(plistfmt.format_name(PlistBinaryForm))   // binary1
+// ```
+pub enum PlistForm
+    // The XML document type: an `<?xml?>` declaration, the Apple
+    // DOCTYPE and a `<plist>` element.
+    PlistXmlForm
+    // `bplist00` and its tables.
+    PlistBinaryForm
+
+// The name Apple's `plutil` uses for the form: `"xml1"`, `"binary1"`.
+pub fn format_name(f: PlistForm) -> Str []
+    todo("plist-nv.plistfmt.format_name")
+
+// The form a buffer is in, or `PlistUnknownFormat`.
+//
+// Decided by the first bytes: `bplist00` is the binary form, and a
+// `<?xml`, a `<!DOCTYPE` or a `<plist` after any whitespace or
+// byte-order mark is the XML one.  Nothing else is a property list,
+// including the OpenStep text form — see the README for why.
+//
+// ```novo
+// use std.bytes
+// use plistfmt
+//
+// fn main() [io]
+//     match plistfmt.detect(bytes.from_str("bplist00"))
+//         Ok(f)  => println(plistfmt.format_name(f))   // binary1
+//         Err(e) => println(e.message())
+// ```
+pub fn detect(src: Bytes) -> Result<PlistForm, PlistFault> []
+    todo("plist-nv.plistfmt.detect")
+
+// The root value of a property list in either form.
+//
+// The call a tool that opens a file it did not write makes.
+//
+// ```novo
+// use std.bytes
+// use plistfmt
+//
+// fn main() [io]
+//     match plistfmt.read(bytes.zeros(0))
+//         Ok(_)  => println("this cannot happen — an empty buffer is not a file")
+//         Err(e) => println(e.message())
+// ```
+pub fn read(src: Bytes) -> Result<PlistValue, PlistFault> []
+    todo("plist-nv.plistfmt.read")
+
+// The value written in a named form.
+//
+// `PlistNoXmlSpelling` when the form is XML and the value holds a set
+// or a UID.
+//
+// ```novo
+// use std.bytes
+// use plistvalue
+// use plistfmt
+//
+// fn main() [io]
+//     match plistfmt.write(plistvalue.dict(), PlistBinaryForm)
+//         Ok(b)  => println("${bytes.len(b)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn write(v: PlistValue, form: PlistForm) -> Result<Bytes, PlistFault> []
+    todo("plist-nv.plistfmt.write")
+
+// A file converted from whichever form it is in to a named one.
+//
+// A read and a write, and a file already in the target form is still
+// read and written, so the result is canonical rather than untouched.
+// `plutil -convert` is the tool this is.
+//
+// ```novo
+// use std.bytes
+// use plistfmt
+//
+// fn main() [io]
+//     match plistfmt.convert(bytes.zeros(0), PlistXmlForm)
+//         Ok(_)  => println("this cannot happen")
+//         Err(e) => println(e.message())
+// ```
+pub fn convert(src: Bytes, to: PlistForm) -> Result<Bytes, PlistFault> []
+    todo("plist-nv.plistfmt.convert")
+
+// Whether a value can be written in a named form.
+//
+// True for every value in the binary form, and false for a set or a UID
+// in the XML one.  What a tool offering a conversion asks before it
+// offers it.
+//
+// ```novo
+// use plistvalue
+// use plistfmt
+//
+// fn main() [io]
+//     println("${plistfmt.can_write(PlistUid(3), PlistXmlForm)}")   // false
+// ```
+pub fn can_write(v: PlistValue, form: PlistForm) -> Bool []
+    todo("plist-nv.plistfmt.can_write")

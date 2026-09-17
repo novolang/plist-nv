@@ -1,0 +1,398 @@
+// plist_tests.nv — the API suite, written against the signatures.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: plist-nv.<module>.<fn>`.
+// That is the expected state of an interface release: the compiler has
+// checked every signature, every type and every effect row, and nothing
+// else has been checked because there is nothing else yet.
+//
+// THE ORACLE IS `plutil`, AND THE CORPUS IS CoreFoundation'S.  Apple's
+// `plutil` converts between the two forms and validates either, so a
+// document is correct here when `plutil -convert binary1` on the XML
+// produces the same object count and the same tables, and
+// `plutil -convert xml1` on the binary produces the same text.  The
+// files that exercise the corners are the ones every macOS system
+// already has: an application's `Info.plist`, a `launchd` job
+// description, and an NSKeyedArchiver archive, which is the only place
+// a UID appears in practice.  The generated run over a corpus of those
+// lands with the implementation.
+
+use std.test
+use std.list
+use std.bytes
+use std.str
+use xmltree
+use plisterror
+use plistvalue
+use plistbin
+use plistxml
+use plistfmt
+
+// The smallest binary property list: the magic, one object — a false
+// boolean — the offset table, and the trailer.
+fn tiny_binary() -> Bytes
+    bytes.from_hex("62706c6973743030"
+                 + "08"
+                 + "08"
+                 + "000000000000010100000000000000010000000000000000"
+                 + "0000000000000009") ?? bytes.zeros(0)
+
+// ── Telling the two forms apart ─────────────────────────────────────
+
+@test
+fn test_the_form_is_decided_by_the_first_bytes_and_not_by_the_name()
+    // `Info.plist` is XML in one bundle and binary in the next.
+    match plistfmt.detect(bytes.from_str("bplist00"))
+        Err(e) => test.fail(e.message())
+        Ok(f)  => test.assert_eq(plistfmt.format_name(f), "binary1")
+    match plistfmt.detect(bytes.from_str("<?xml version=\"1.0\"?>"))
+        Err(e) => test.fail(e.message())
+        Ok(f)  => test.assert_eq(plistfmt.format_name(f), "xml1")
+    match plistfmt.detect(bytes.from_str("{ a = b; }"))
+        Ok(_)  => test.fail("the OpenStep text form is not read")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "unknown-format")
+    test.assert(plistbin.is_binary(bytes.from_str("bplist00")))
+    test.assert(plistbin.is_binary(bytes.from_str("<?xml")) == false)
+    test.assert(plistxml.is_xml("<?xml version=\"1.0\"?>"))
+    test.assert(plistxml.is_xml("bplist00") == false)
+
+@test
+fn test_one_call_reads_either_form()
+    match plistfmt.read(bytes.zeros(0))
+        Ok(_)  => test.fail("an empty buffer is not a file")
+        Err(e) => test.assert(plisterror.is_file_fault(e))
+    match plistfmt.read(tiny_binary())
+        Err(e) => test.fail(e.message())
+        Ok(v)  => test.assert_eq(plistvalue.kind_name(v), "boolean")
+
+// ── The binary form's tables ────────────────────────────────────────
+
+@test
+fn test_the_trailer_and_the_offset_table_are_readable_on_their_own()
+    // Three questions a reader that only handed back a value could not
+    // answer: is this table sound, how many objects are there, and does
+    // a file we wrote have the same count as plutil's.
+    match plistbin.read_index(tiny_binary())
+        Err(e) => test.fail(e.message())
+        Ok(ix) =>
+            test.assert_eq(ix.offset_width, 1)
+            test.assert_eq(ix.ref_width, 1)
+            test.assert_eq(ix.object_count, 1)
+            test.assert_eq(ix.root, 0)
+            test.assert_eq(ix.table_start, 9)
+            test.assert_eq(list.len(ix.offsets), 1)
+            test.assert_eq(list.get(ix.offsets, 0), 8)
+
+@test
+fn test_every_number_in_the_trailer_is_checked_against_the_buffer()
+    // A reader that trusted the trailer would index wherever the
+    // trailer said.
+    match plistbin.read_index(bytes.zeros(8))
+        Ok(_)  => test.fail("eight bytes are magic and no trailer")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "truncated")
+    match plistbin.read(bytes.from_str("NOTPLIST"))
+        Ok(_)  => test.fail("that is not the magic")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "bad-magic")
+    match plistbin.read(bytes.from_str("bplist99"))
+        Ok(_)  => test.fail("only version 00 is read")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "unsupported-binary-version")
+
+@test
+fn test_the_reader_is_configured_with_a_value()
+    let l = plistbin.default_limits()
+    test.assert_eq(l.max_depth, 64)
+    test.assert_eq(l.max_bytes, 67108864)
+    test.assert_eq(l.max_objects, 1000000)
+    match plistbin.read_with(tiny_binary(), l)
+        Err(e) => test.fail(e.message())
+        Ok(v)  => test.assert_eq(plistvalue.kind_name(v), "boolean")
+
+@test
+fn test_one_object_can_be_read_by_its_index()
+    // What a tool showing the object graph uses, and what a reader of
+    // an NSKeyedArchiver archive follows a UID with: a UID IS an index
+    // into this table.
+    match plistbin.object_at(tiny_binary(), 0)
+        Err(e) => test.fail(e.message())
+        Ok(v)  => test.assert_eq(plistvalue.kind_name(v), "boolean")
+    match plistbin.object_at(tiny_binary(), 9)
+        Ok(_)  => test.fail("there is one object")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "bad-reference")
+    match plistbin.marker_at(tiny_binary(), 0)
+        Err(e) => test.fail(e.message())
+        Ok(m)  => test.assert_eq(m, 8)
+    test.assert_eq(plistbin.marker_kind_name(160), "array")
+    test.assert_eq(plistbin.marker_kind_name(208), "dictionary")
+    test.assert_eq(plistbin.marker_kind_name(128), "uid")
+
+@test
+fn test_a_validator_walks_the_whole_graph_and_builds_nothing()
+    match plistbin.validate(tiny_binary())
+        Err(e) => test.fail(e.message())
+        Ok(ok) => test.assert(ok)
+
+@test
+fn test_equal_objects_are_stored_once_and_the_count_says_so()
+    // What Apple's writer does, and what makes a file this package
+    // writes match `plutil -convert binary1` object for object.
+    let d = plistvalue.dict_of([
+        plistvalue.entry("a", PlistString("same")),
+        plistvalue.entry("b", PlistString("same"))])
+    match plistbin.object_count(d)
+        Err(e) => test.fail(e.message())
+        Ok(n)  =>
+            // The dictionary, the two keys, and ONE shared value.
+            test.assert_eq(n, 4)
+    match plistbin.write(d)
+        Err(e) => test.fail(e.message())
+        Ok(b)  =>
+            match plistbin.read_index(b)
+                Err(e2) => test.fail(e2.message())
+                Ok(ix)  => test.assert_eq(ix.object_count, 4)
+    // The unshared writer makes every value its own object, which is
+    // what a test wanting a predictable table asks for.
+    match plistbin.write_unshared(d)
+        Err(e) => test.fail(e.message())
+        Ok(b)  =>
+            match plistbin.read_index(b)
+                Err(e2) => test.fail(e2.message())
+                Ok(ix)  => test.assert_eq(ix.object_count, 5)
+
+// ── The XML form ────────────────────────────────────────────────────
+
+@test
+fn test_the_document_type_is_eleven_elements_and_one_doctype()
+    test.assert_eq(list.len(plistxml.element_names()), 11)
+    test.assert(list.contains(plistxml.element_names(), "dict"))
+    test.assert(list.contains(plistxml.element_names(), "date"))
+    test.assert(list.contains(plistxml.element_names(), "plist"))
+    test.assert(str.contains(plistxml.doctype(), "Apple"))
+    test.assert(str.contains(plistxml.doctype(), "PropertyList-1.0.dtd"))
+
+@test
+fn test_the_xml_form_reads_to_the_same_values()
+    match plistxml.read("<plist version=\"1.0\"><true/></plist>")
+        Err(e) => test.fail(e.message())
+        Ok(v)  =>
+            match plistvalue.as_bool(v)
+                Ok(b)   => test.assert(b)
+                Err(e2) => test.fail(e2.message())
+    match plistxml.read("<plist version=\"1.0\"><integer>7</integer></plist>")
+        Err(e) => test.fail(e.message())
+        Ok(v)  =>
+            match plistvalue.as_int(v)
+                Ok(n)   => test.assert_eq(n, 7)
+                Err(e2) => test.fail(e2.message())
+
+@test
+fn test_a_root_that_is_not_a_plist_element_is_refused()
+    match plistxml.read("<notplist/>")
+        Ok(_)  => test.fail("the root is `plist`")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "bad-root")
+    match plistxml.read("<plist version=\"1.0\"><true>")
+        Ok(_)  => test.fail("that is not well-formed XML")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "bad-xml")
+    match plistxml.read("<plist version=\"1.0\"><sketch/></plist>")
+        Ok(_)  => test.fail("`sketch` is not in the document type")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "unknown-element")
+
+@test
+fn test_a_dicts_children_must_alternate_key_and_value()
+    // The one shape rule the document type cannot express, so every
+    // reader checks it by hand.
+    match plistxml.read("<plist version=\"1.0\"><dict><key>a</key></dict></plist>")
+        Ok(_)  => test.fail("that key has no value")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "bad-dict-shape")
+
+@test
+fn test_the_xml_writer_produces_a_whole_file_or_a_fragment()
+    match plistxml.write(plistvalue.dict())
+        Err(e) => test.fail(e.message())
+        Ok(t)  =>
+            test.assert(str.contains(t, "<?xml"))
+            test.assert(str.contains(t, plistxml.doctype()))
+            test.assert(str.contains(t, "<plist version=\"1.0\">"))
+    match plistxml.write_fragment(plistvalue.dict())
+        Err(e) => test.fail(e.message())
+        Ok(t)  =>
+            test.assert(str.contains(t, "<plist"))
+            test.assert(str.contains(t, "<?xml") == false)
+
+// ── The two values the XML form has no word for ─────────────────────
+
+@test
+fn test_a_set_and_a_uid_have_no_xml_spelling_and_are_refused_by_name()
+    test.assert(plistvalue.has_xml_spelling(PlistBool(true)))
+    test.assert(plistvalue.has_xml_spelling(PlistUid(3)) == false)
+    test.assert(plistvalue.has_xml_spelling(PlistSet([])) == false)
+    // The case a shallow check gets wrong: a dictionary holding one.
+    let d = plistvalue.append(plistvalue.dict(), "k", PlistUid(3))
+    test.assert(plistvalue.has_xml_spelling(d) == false)
+    test.assert_eq(list.len(plistvalue.xml_blockers(d)), 1)
+    test.assert_eq(list.len(plistvalue.xml_blockers(plistvalue.dict())), 0)
+    match plistxml.write(d)
+        Ok(_)  => test.fail("a UID has no spelling in that document type")
+        Err(e) =>
+            test.assert_eq(plisterror.code_of(e), "no-xml-spelling")
+            // Not a file fault: the FILE was fine, the value cannot be
+            // written that way.
+            test.assert(plisterror.is_file_fault(e) == false)
+    test.assert(plistfmt.can_write(PlistUid(3), PlistXmlForm) == false)
+    test.assert(plistfmt.can_write(PlistUid(3), PlistBinaryForm))
+
+@test
+fn test_the_cfuid_dictionary_is_a_deliberate_loss()
+    // Apple's own tools make this conversion silently and the value
+    // stops being a UID.  Here it is a call somebody wrote.
+    let d = plistvalue.as_cfuid_dict(PlistUid(3))
+    test.assert_eq(plistvalue.len(d), 1)
+    match plistvalue.get(d, "CF\$UID")
+        Err(e) => test.fail(e.message())
+        Ok(v)  =>
+            match plistvalue.as_int(v)
+                Ok(n)   => test.assert_eq(n, 3)
+                Err(e2) => test.fail(e2.message())
+    test.assert(plistvalue.has_xml_spelling(d))
+
+// ── Dates and data are their own types ──────────────────────────────
+
+@test
+fn test_a_date_is_seconds_from_the_2001_reference_instant()
+    // Not a string somebody has to recognise, and not a civil date:
+    // this package has no calendar and no clock.
+    test.assert_eq(plistvalue.reference_epoch(), 978307200)
+    test.assert_eq(plistvalue.unix_seconds(0.0), 978307200.0)
+    test.assert_eq(plistvalue.reference_seconds(978307200.0), 0.0)
+    match plistvalue.as_date_seconds(PlistDate(0.0))
+        Err(e) => test.fail(e.message())
+        Ok(s)  => test.assert_eq(s, 0.0)
+    // A date before the reference instant is negative.
+    match plistvalue.as_date_seconds(PlistDate(0.0 - 1.0))
+        Err(e) => test.fail(e.message())
+        Ok(s)  => test.assert_eq(s, 0.0 - 1.0)
+
+@test
+fn test_the_xml_date_text_is_utc_and_whole_seconds()
+    // The binary form has a fractional part and the XML form has
+    // nowhere to put it.
+    test.assert_eq(plistxml.date_text(0.0), "2001-01-01T00:00:00Z")
+    match plistxml.date_seconds("2001-01-01T00:00:00Z")
+        Err(e) => test.fail(e.message())
+        Ok(s)  => test.assert_eq(s, 0.0)
+    match plistxml.date_seconds("not a date")
+        Ok(_)  => test.fail("that is not a date")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "bad-text")
+
+@test
+fn test_data_is_bytes_and_not_a_base64_string()
+    // A reader that handed back a string would leave every caller to
+    // guess which strings were really bytes.
+    match plistvalue.as_data(PlistData(bytes.zeros(4)))
+        Err(e) => test.fail(e.message())
+        Ok(b)  => test.assert_eq(bytes.len(b), 4)
+    match plistvalue.as_data(PlistString("AAAAAA=="))
+        Ok(_)  => test.fail("a string is not data")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "wrong-kind")
+
+@test
+fn test_an_integer_too_wide_for_an_int_is_its_own_case()
+    // The binary form has a sixteen-byte width, and a reader handed
+    // `-1` for a value that was really 2^127-1 could not tell them
+    // apart.
+    let big = PlistBigInteger(bytes.zeros(16))
+    test.assert_eq(plistvalue.kind_name(big), "integer")
+    match plistvalue.as_int(big)
+        Ok(_)  => test.fail("a caller that wants the truncation asks for the bytes")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "wrong-kind")
+    match plistvalue.as_float(PlistReal(1.5))
+        Err(e) => test.fail(e.message())
+        Ok(f)  => test.assert_eq(f, 1.5)
+    match plistvalue.as_str(PlistString("x"))
+        Err(e) => test.fail(e.message())
+        Ok(s)  => test.assert_eq(s, "x")
+
+// ── The dictionary keeps its order ──────────────────────────────────
+
+@test
+fn test_a_dictionary_keeps_its_order_and_shows_its_duplicates()
+    let d = plistvalue.dict_of([
+        plistvalue.entry("b", PlistInteger(2)),
+        plistvalue.entry("a", PlistInteger(1)),
+        plistvalue.entry("b", PlistInteger(3))])
+    match plistvalue.as_dict(d)
+        Err(e) => test.fail(e.message())
+        Ok(es) =>
+            test.assert_eq(list.len(es), 3)
+            test.assert_eq(list.get(es, 0).key, "b")
+    test.assert_eq(plistvalue.len(d), 3)
+    test.assert_eq(plistvalue.count_of(d, "b"), 2)
+    match plistvalue.get(d, "b")
+        Err(e) => test.fail(e.message())
+        Ok(v)  =>
+            match plistvalue.as_int(v)
+                Ok(n)   => test.assert_eq(n, 2)
+                Err(e2) => test.fail(e2.message())
+    match plistvalue.lookup(d, "zz")
+        Some(_) => test.fail("there is no such key")
+        None    => test.assert(true)
+    match plistvalue.get(d, "zz")
+        Ok(_)  => test.fail("there is no such key")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "no-such-key")
+
+@test
+fn test_replace_keeps_the_position_and_remove_takes_every_one()
+    let d = plistvalue.dict_of([
+        plistvalue.entry("a", PlistInteger(1)),
+        plistvalue.entry("b", PlistInteger(2)),
+        plistvalue.entry("a", PlistInteger(3))])
+    match plistvalue.as_dict(plistvalue.replace(d, "a", PlistInteger(9)))
+        Err(e) => test.fail(e.message())
+        Ok(es) => test.assert_eq(list.get(es, 0).key, "a")
+    test.assert_eq(plistvalue.count_of(plistvalue.remove(d, "a"), "a"), 0)
+
+@test
+fn test_a_path_descends_dictionaries_and_arrays_are_indexed_by_hand()
+    let inner = plistvalue.append(plistvalue.dict(), "b", PlistInteger(7))
+    let outer = plistvalue.append(plistvalue.dict(), "a", inner)
+    match plistvalue.path(outer, ["a", "b"])
+        None    => test.fail("the path is there")
+        Some(v) =>
+            match plistvalue.as_int(v)
+                Ok(n)   => test.assert_eq(n, 7)
+                Err(e2) => test.fail(e2.message())
+    match plistvalue.as_array(PlistArray([PlistInteger(1)]))
+        Err(e) => test.fail(e.message())
+        Ok(xs) => test.assert_eq(list.len(xs), 1)
+
+// ── Conversion, which is a read and a write ─────────────────────────
+
+@test
+fn test_converting_is_plutil_convert()
+    match plistfmt.convert(tiny_binary(), PlistXmlForm)
+        Err(e) => test.fail(e.message())
+        Ok(b)  => test.assert(str.contains(bytes.to_str(b), "<true/>"))
+    match plistfmt.write(plistvalue.dict(), PlistBinaryForm)
+        Err(e) => test.fail(e.message())
+        Ok(b)  => test.assert(plistbin.is_binary(b))
+    match plistfmt.convert(bytes.zeros(0), PlistXmlForm)
+        Ok(_)  => test.fail("an empty buffer is not a file")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "unknown-format")
+
+@test
+fn test_a_fault_carries_the_offset_it_was_found_at()
+    test.assert_eq(plisterror.offset_of(PlistBadOffset(3, 900)), 900)
+    test.assert_eq(plisterror.offset_of(PlistUnknownFormat), 0)
+    test.assert(plisterror.is_file_fault(PlistUnknownFormat))
+    test.assert(plisterror.is_file_fault(PlistNoSuchKey("CFBundleName")) == false)
+
+@test
+fn test_a_value_reads_out_of_an_xml_tree_a_caller_already_built()
+    // For a `<plist>` embedded inside a provisioning profile, without
+    // cutting the text out first.
+    let doc = xmltree.build("<plist version=\"1.0\"><true/></plist>")
+    match plistxml.from_document(doc)
+        Err(e) => test.fail(e.message())
+        Ok(v)  => test.assert_eq(plistvalue.kind_name(v), "boolean")
+    match plistxml.value_at(doc, xmltree.root(doc))
+        Err(e) => test.fail(e.message())
+        Ok(v)  => test.assert_eq(plistvalue.kind_name(v), "boolean")

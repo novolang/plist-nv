@@ -1,0 +1,316 @@
+// plistvalue — the values a property list holds.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// A DATE IS ITS OWN TYPE, AND IT IS A NUMBER.  The binary form stores a
+// date as a big-endian 64-bit float: seconds from the Apple reference
+// instant, which is 2001-01-01 00:00:00 UTC.  The XML form writes the
+// same instant as ISO 8601 in `Z`.  Both are the same instant, and the
+// number is the one that survives the conversion exactly, so
+// `PlistDate` carries it.
+//
+// It is NOT a `Str` and it is NOT a civil date.  A string would make a
+// reader recognise `"2024-05-01T00:00:00Z"` as a date by looking at it,
+// which is exactly the mistake JSON forces on everybody.  A civil date
+// would need a calendar and a time zone, and this package is `core`
+// with no clock; calendar-nv is where those live, and
+// `date_seconds` hands it the one number it needs.
+//
+// DATA IS ITS OWN TYPE TOO, for the same reason in the other
+// direction: the XML form writes it as base64 text, and a reader that
+// handed back a string would leave every caller to guess which strings
+// were really bytes.
+//
+// A DICTIONARY KEEPS ITS ORDER.  The binary form stores a dictionary as
+// two parallel reference arrays and the order in them is the order
+// somebody wrote; the XML form is a sequence of elements.  A writer
+// that sorted would change the bytes, and Apple's own tools do not
+// sort.  Duplicate keys are possible in the syntax of both forms, and
+// `count_of` is what finds them.
+
+// A property list value.
+//
+// Eight kinds that both forms hold, plus two the binary form has alone.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     println(plistvalue.kind_name(PlistBool(true)))   // boolean
+// ```
+pub enum PlistValue
+    // `<true/>` or `<false/>`; binary markers `0x08` and `0x09`.
+    PlistBool(v: Bool)
+    // `<integer>`; binary marker `0x1`.  Signed, and the binary form
+    // has a sixteen-byte width whose values do not fit an `Int` — see
+    // `PlistBigInteger`.
+    PlistInteger(v: Int)
+    // An integer the binary form wrote in its sixteen-byte width, as
+    // those bytes.
+    //
+    // A SEPARATE ARM rather than a silent truncation, because a reader
+    // handed `-1` for a value that was really `2^127 - 1` would have no
+    // way to tell it from an actual `-1`.  The XML form writes it as
+    // digits and it comes back here too, so the two forms agree.
+    PlistBigInteger(be_bytes: Bytes)
+    // `<real>`; binary marker `0x2`.  A 64-bit float, and a 32-bit one
+    // in the binary form widens to it losslessly.
+    PlistReal(v: Float)
+    // `<string>`; binary markers `0x5` (ASCII) and `0x6` (UTF-16
+    // big-endian).  Held as UTF-8 whichever it was, with `was_utf16`
+    // remembered by the binary reader so a round trip picks the same
+    // marker.
+    PlistString(v: Str)
+    // `<date>`; binary marker `0x33`.  Seconds from 2001-01-01
+    // 00:00:00 UTC, which may be negative.
+    PlistDate(seconds: Float)
+    // `<data>`; binary marker `0x4`.  The bytes themselves, with the
+    // XML form's base64 already decoded.
+    PlistData(v: Bytes)
+    // `<array>`; binary marker `0xA`.
+    PlistArray(items: [PlistValue])
+    // `<dict>`; binary marker `0xD`.
+    PlistDict(entries: [PlistEntry])
+    // Binary marker `0xC`: a set.  NO SPELLING IN THE XML DOCUMENT
+    // TYPE, so writing one as XML is `PlistNoXmlSpelling`.
+    PlistSet(items: [PlistValue])
+    // Binary marker `0x8`: a UID, which is how NSKeyedArchiver points
+    // from one object to another.  NO SPELLING IN THE XML DOCUMENT
+    // TYPE; Apple's tools convert it to a dictionary with a `CF$UID`
+    // key and lose the fact that it was a UID, and
+    // `as_cfuid_dict` is that conversion made deliberate.
+    PlistUid(v: Int)
+
+// One entry of a dictionary.
+//
+// A struct rather than a pair, because a list of two-element arrays is
+// a different value.
+pub struct PlistEntry
+    // The key.  A property list key is always a string.
+    key: Str
+    // The value.
+    value: PlistValue
+
+// The kind's name, as Apple's own documentation writes it:
+// `"boolean"`, `"integer"`, `"real"`, `"string"`, `"date"`, `"data"`,
+// `"array"`, `"dictionary"`, `"set"`, `"uid"`.
+//
+// What `PlistWrongKind` reports.
+pub fn kind_name(v: PlistValue) -> Str []
+    todo("plist-nv.plistvalue.kind_name")
+
+// Whether the value can be written in the XML form.
+//
+// False for a set and a UID, and false for any array or dictionary
+// containing one — which is the case a shallow check gets wrong.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     println("${plistvalue.has_xml_spelling(PlistUid(3))}")   // false
+// ```
+pub fn has_xml_spelling(v: PlistValue) -> Bool []
+    todo("plist-nv.plistvalue.has_xml_spelling")
+
+// The boolean a value holds, or `PlistWrongKind`.
+pub fn as_bool(v: PlistValue) -> Result<Bool, PlistFault> []
+    todo("plist-nv.plistvalue.as_bool")
+
+// The integer a value holds, or `PlistWrongKind`.
+//
+// `PlistBigInteger` does NOT answer here: a caller that wanted the
+// truncation asks for the bytes and does it where it can see the loss.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     match plistvalue.as_int(PlistInteger(7))
+//         Ok(n)  => println("${n}")   // 7
+//         Err(e) => println(e.message())
+// ```
+pub fn as_int(v: PlistValue) -> Result<Int, PlistFault> []
+    todo("plist-nv.plistvalue.as_int")
+
+// The float a value holds, or `PlistWrongKind`.
+pub fn as_float(v: PlistValue) -> Result<Float, PlistFault> []
+    todo("plist-nv.plistvalue.as_float")
+
+// The string a value holds, or `PlistWrongKind`.
+pub fn as_str(v: PlistValue) -> Result<Str, PlistFault> []
+    todo("plist-nv.plistvalue.as_str")
+
+// The bytes a data value holds, or `PlistWrongKind`.
+pub fn as_data(v: PlistValue) -> Result<Bytes, PlistFault> []
+    todo("plist-nv.plistvalue.as_data")
+
+// The seconds a date value holds, counted from 2001-01-01 00:00:00
+// UTC, or `PlistWrongKind`.
+//
+// The number, not a date.  `unix_seconds` converts it to the epoch
+// everything else counts from, and a calendar is another package's.
+pub fn as_date_seconds(v: PlistValue) -> Result<Float, PlistFault> []
+    todo("plist-nv.plistvalue.as_date_seconds")
+
+// The array a value holds, or `PlistWrongKind`.
+pub fn as_array(v: PlistValue) -> Result<[PlistValue], PlistFault> []
+    todo("plist-nv.plistvalue.as_array")
+
+// The dictionary entries a value holds, or `PlistWrongKind`.
+pub fn as_dict(v: PlistValue) -> Result<[PlistEntry], PlistFault> []
+    todo("plist-nv.plistvalue.as_dict")
+
+// One dictionary entry.
+pub fn entry(key: Str, value: PlistValue) -> PlistEntry []
+    todo("plist-nv.plistvalue.entry")
+
+// An empty dictionary.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     println("${plistvalue.len(plistvalue.dict())}")   // 0
+// ```
+pub fn dict() -> PlistValue []
+    todo("plist-nv.plistvalue.dict")
+
+// A dictionary from its entries, in the order given.
+pub fn dict_of(entries: [PlistEntry]) -> PlistValue []
+    todo("plist-nv.plistvalue.dict_of")
+
+// `d` with one more entry at the end.
+//
+// APPEND, not insert-or-replace: both forms permit a duplicate key, and
+// `replace` is the function that changes one in place.
+pub fn append(d: PlistValue, key: Str, value: PlistValue) -> PlistValue []
+    todo("plist-nv.plistvalue.append")
+
+// How many entries a dictionary has, or how many elements an array or a
+// set has; `0` for a scalar.
+pub fn len(v: PlistValue) -> Int []
+    todo("plist-nv.plistvalue.len")
+
+// The value under a key, or `PlistNoSuchKey`.
+//
+// The FIRST entry with that key, because that is the one a reader meets
+// and the one Apple's own frameworks use.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     match plistvalue.get(plistvalue.dict(), "CFBundleName")
+//         Ok(_)  => println("this cannot happen — the dictionary is empty")
+//         Err(e) => println(e.message())
+// ```
+pub fn get(v: PlistValue, key: Str) -> Result<PlistValue, PlistFault> []
+    todo("plist-nv.plistvalue.get")
+
+// The same lookup as an option.
+pub fn lookup(v: PlistValue, key: Str) -> ?PlistValue []
+    todo("plist-nv.plistvalue.lookup")
+
+// How many entries carry this key.
+//
+// The duplicate detector.  Both syntaxes permit a duplicate, and
+// Apple's own reader keeps whichever it met last in some versions and
+// first in others, so a file that has one is a file somebody has to be
+// told about.
+pub fn count_of(v: PlistValue, key: Str) -> Int []
+    todo("plist-nv.plistvalue.count_of")
+
+// `d` with the first entry of this key given a new value, keeping its
+// position; `d` with the entry appended when there was none.
+pub fn replace(d: PlistValue, key: Str, value: PlistValue) -> PlistValue []
+    todo("plist-nv.plistvalue.replace")
+
+// `d` without any entry of this key.
+pub fn remove(d: PlistValue, key: Str) -> PlistValue []
+    todo("plist-nv.plistvalue.remove")
+
+// The value at a path of dictionary keys, or `None`.
+//
+// Keys only.  An array index is not a key, and a caller walking into an
+// array takes the `PlistArray` and indexes the list itself.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     match plistvalue.path(plistvalue.dict(), ["a", "b"])
+//         Some(_) => println("found")
+//         None    => println("no such path")
+// ```
+pub fn path(v: PlistValue, keys: [Str]) -> ?PlistValue []
+    todo("plist-nv.plistvalue.path")
+
+// The Apple reference instant as Unix seconds: 978307200.
+//
+// 2001-01-01 00:00:00 UTC.  A named function rather than a constant in
+// three places, and the one number a caller needs to move a date into
+// the epoch everything else counts from.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     println("${plistvalue.reference_epoch()}")   // 978307200
+// ```
+pub fn reference_epoch() -> Int []
+    todo("plist-nv.plistvalue.reference_epoch")
+
+// A date's seconds converted to seconds since the Unix epoch.
+//
+// The conversion every consumer would otherwise write, with the
+// reference instant in it.  It is a `Float` on both sides because the
+// format's own value is one and a property list date has a fractional
+// part.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     println("${plistvalue.unix_seconds(0.0)}")   // 978307200
+// ```
+pub fn unix_seconds(reference_seconds: Float) -> Float []
+    todo("plist-nv.plistvalue.unix_seconds")
+
+// The inverse: Unix seconds as seconds from the reference instant.
+pub fn reference_seconds(unix: Float) -> Float []
+    todo("plist-nv.plistvalue.reference_seconds")
+
+// A UID as the dictionary Apple's own tools convert it to: one entry
+// whose key is `CF$UID` and whose value is the integer.
+//
+// THE DELIBERATE LOSS.  A property list written this way is readable by
+// every tool and is no longer a UID: converting it back would mean
+// guessing that any dictionary with that one key was one. So this is a
+// call a caller makes on purpose, and the XML writer refuses rather
+// than making it quietly.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     println("${plistvalue.len(plistvalue.as_cfuid_dict(PlistUid(3)))}")   // 1
+// ```
+pub fn as_cfuid_dict(v: PlistValue) -> PlistValue []
+    todo("plist-nv.plistvalue.as_cfuid_dict")
+
+// Every value in the tree that has no XML spelling, with the path of
+// dictionary keys and array indexes that reaches it.
+//
+// What a caller converting a binary file to XML calls first, so the
+// message names the place rather than the kind.
+//
+// ```novo
+// use plistvalue
+//
+// fn main() [io]
+//     println("${list.len(plistvalue.xml_blockers(plistvalue.dict()))}")   // 0
+// ```
+pub fn xml_blockers(v: PlistValue) -> [Str] []
+    todo("plist-nv.plistvalue.xml_blockers")

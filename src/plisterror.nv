@@ -1,0 +1,133 @@
+// plisterror — every refusal, and where in the file each of them was
+// found.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// ONE TAXONOMY FOR TWO FORMATS, because the two forms of a property
+// list are the same document and a caller that reads whichever it is
+// handed writes one match.  A fault from the binary reader carries a
+// byte offset; one from the XML reader carries a byte offset into the
+// text and the element name it was inside, because "unexpected
+// element" with no name is not a diagnosis.
+//
+// THE THIRD KIND OF REFUSAL is the one worth naming: a value that one
+// form can hold and the other cannot.  A set and a UID exist in the
+// binary form and have no spelling in the XML document type, so writing
+// one as XML is `PlistNoXmlSpelling` rather than a silent conversion.
+// Apple's own tools convert a UID into a dictionary with a `CF$UID` key
+// and lose the fact that it was a UID; this package refuses and offers
+// `plistvalue.as_cfuid_dict` for the caller that wants that conversion
+// on purpose.
+
+// What went wrong.
+pub enum PlistFault
+    // The bytes are neither an XML property list nor a binary one.
+    PlistUnknownFormat
+    // The binary form's eight-byte magic is not `bplist00`.
+    PlistBadMagic(saw: Str)
+    // The binary form's version is not `00`.  A later version is a
+    // format this package has not seen, and reading it as `00` would be
+    // reading the wrong table widths.
+    PlistUnsupportedBinaryVersion(saw: Str)
+    // The buffer ended before the object, the table or the trailer did.
+    PlistTruncated(at: Int, need: Int)
+    // The thirty-two-byte trailer's numbers do not describe the buffer:
+    // an offset table that starts past the end, an object count larger
+    // than the table holds, a top object reference outside the table.
+    PlistBadTrailer(why: Str)
+    // An offset in the offset table points outside the buffer, or into
+    // the trailer.
+    PlistBadOffset(index: Int, offset: Int)
+    // An object reference names an object index the table does not
+    // have.
+    PlistBadReference(at: Int, reference: Int)
+    // An object marker byte the binary format does not assign.
+    PlistUnknownMarker(at: Int, marker: Int)
+    // An integer whose width byte is not 1, 2, 4, 8 or 16.
+    PlistBadIntegerWidth(at: Int, width: Int)
+    // A string whose bytes are not the encoding its marker declares:
+    // ASCII for `0x5`, UTF-16 big-endian for `0x6`.
+    PlistBadStringEncoding(at: Int)
+    // The object graph refers to itself.  The binary form is a graph of
+    // references and nothing in the format forbids a cycle, so a reader
+    // that followed one would never return.
+    PlistCycle(at: Int, reference: Int)
+    // The document nested deeper than the reader's limit.
+    PlistDepthExceeded(at: Int, depth: Int)
+    // The XML form's root element is not `plist`, or its `version`
+    // attribute is not `1.0`.
+    PlistBadRoot(at: Int, saw: Str)
+    // An element the property list document type does not define.
+    PlistUnknownElement(at: Int, name: Str)
+    // A `dict` whose children are not alternating `key` and value
+    // elements, which is the one shape rule the document type cannot
+    // express and every reader has to check.
+    PlistBadDictShape(at: Int, why: Str)
+    // An `integer`, `real` or `date` whose text is not the shape the
+    // element requires.
+    PlistBadText(at: Int, element: Str, saw: Str)
+    // A `data` element whose text is not base64.
+    PlistBadBase64(at: Int)
+    // The XML text is not well-formed XML at all.  `why` is xml-nv's
+    // own sentence, so a caller does not need that package's error type
+    // to render it.
+    PlistBadXml(at: Int, why: Str)
+    // A value with no spelling in the XML property list document type:
+    // a set, or a UID.  `plistvalue.as_cfuid_dict` is the deliberate
+    // conversion for the second.
+    PlistNoXmlSpelling(kind: Str)
+    // An accessor was asked for one kind and the value was another.
+    PlistWrongKind(want: Str, saw: Str)
+    // A key the caller asked for is not in the dictionary.
+    PlistNoSuchKey(key: Str)
+
+// The standard `Error` implementation, so a bad file can be reported by
+// anything that reports errors.
+impl Error for PlistFault
+    // Answer the one-line report: what was wrong, and where.
+    fn message(self) -> Str
+        todo("plist-nv.plisterror.PlistFault.message")
+
+// The byte offset a fault was found at, or `0` for the faults that are
+// about the document as a whole.
+//
+// ```novo
+// use plisterror
+//
+// fn main() [io]
+//     println("${plisterror.offset_of(PlistBadOffset(3, 900))}")   // 900
+// ```
+pub fn offset_of(f: PlistFault) -> Int []
+    todo("plist-nv.plisterror.offset_of")
+
+// A short, stable name for the fault, for a metric label or a test.
+//
+// The variant's own spelling with the `Plist` prefix removed and the
+// words separated by hyphens: `"bad-magic"`, `"bad-trailer"`,
+// `"no-xml-spelling"`.
+//
+// ```novo
+// use plisterror
+//
+// fn main() [io]
+//     println(plisterror.code_of(PlistUnknownFormat))   // unknown-format
+// ```
+pub fn code_of(f: PlistFault) -> Str []
+    todo("plist-nv.plisterror.code_of")
+
+// Whether the fault says the file is malformed, rather than that the
+// caller asked for something the file does not have.
+//
+// False for `PlistWrongKind` and `PlistNoSuchKey`, and false for
+// `PlistNoXmlSpelling`, which says the VALUE cannot be written that way
+// and not that anything was read wrongly.
+//
+// ```novo
+// use plisterror
+//
+// fn main() [io]
+//     println("${plisterror.is_file_fault(PlistNoSuchKey("CFBundleName"))}")
+// ```
+pub fn is_file_fault(f: PlistFault) -> Bool []
+    todo("plist-nv.plisterror.is_file_fault")

@@ -1,0 +1,53 @@
+[package]
+name        = "plist-nv"
+version     = "0.0.1"
+description = "Apple property lists in both of their current forms: the XML one over xml-nv, and the binary one with its object table, its offset table and its trailer exposed rather than hidden, so a reader can check the bytes it was handed and a writer can be held to the object count Apple's own produces.  A date is seconds from the 2001 reference instant and data is bytes, each its own type rather than a string somebody has to recognise.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`: a scan over bytes or text the caller already holds.  Every
+# public function declares `[]`, and the place an effect would have
+# been natural is named rather than smuggled in: a property list date
+# is an instant, and turning one into a civil date needs a calendar and
+# a time zone.  So a date is carried as the number the format stores —
+# seconds from the 2001 reference instant — and nothing here reads a
+# clock or a zone database.
+#
+# NO `tests/embedded_probe.nv`, and the absence is a claim not made
+# rather than a claim skipped.  A property list is a tree of owned
+# strings and buffers, and the XML form is read through xml-nv, which
+# makes no device claim either.
+layer       = "core"
+
+category    = "data"
+
+tags        = ["plist", "property-list", "apple", "macos", "bplist", "xml", "sans-io"]
+repository  = "https://github.com/novolang/plist-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "The two forms of an Apple property list, both ways"
+
+[dependencies]
+# xml-nv reads the XML form.  A property list's XML is a small closed
+# vocabulary — eleven element names, no namespaces, one DOCTYPE — and
+# writing a second scanner for it would be writing a second XML parser
+# with all of the same escaping, entity and encoding decisions to get
+# wrong.  `plistxml.from_document` takes xml-nv's own tree, so a caller
+# that has already parsed the file does not parse it twice.
+#
+# `core`, so the layer rule holds.  `^0.0.1` pins exactly 0.0.1, which
+# is an INTERFACE release: its bodies are `todo()` too, so plist-nv's
+# XML half cannot be implemented before xml-nv's is.  That order is
+# stated in the README rather than discovered at the first body.
+xml-nv = "^0.0.1"

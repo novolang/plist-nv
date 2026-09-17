@@ -1,0 +1,233 @@
+// plistbin — the binary form, with its tables in the open.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// WHAT A BINARY PROPERTY LIST IS.  Eight bytes of magic — `bplist00` —
+// then the OBJECTS, then the OFFSET TABLE, then a thirty-two-byte
+// TRAILER.  The trailer is read first, because everything else is
+// reached through it:
+//
+//   bytes 0..5    unused
+//   byte  6       the width, in bytes, of one entry in the offset table
+//   byte  7       the width, in bytes, of one object reference
+//   bytes 8..15   how many objects there are
+//   bytes 16..23  which object is the root
+//   bytes 24..31  where the offset table starts
+//
+// The offset table is that many entries of that width, each the byte
+// offset of one object.  An object is a marker byte — four bits of kind
+// and four of length or width — and its payload.  A collection's
+// payload is not its elements: it is their INDEXES into the offset
+// table, each of the reference width.  So the same string written into
+// ten dictionaries is stored once, and the file is a graph rather than
+// a tree.
+//
+// THE TABLES ARE EXPOSED, AND THAT IS THIS MODULE'S DECISION.  A reader
+// that only handed back a value would make three questions
+// unanswerable: is this file's offset table sound, how many distinct
+// objects does it hold, and does a file this package wrote have the
+// same object count as the one Apple's `plutil` writes.  All three are
+// what somebody debugging a property list actually asks.  So
+// `read_index` answers the trailer and the offset table without
+// building any value, and `read` is `read_index` plus the walk.
+//
+// A GRAPH CAN HAVE A CYCLE, and nothing in the format forbids one.  An
+// array whose element refers back to it is a file a reader that
+// followed references would never return from, so the reader tracks the
+// objects on its path and answers `PlistCycle`.
+
+// The trailer and the offset table, without any value built.
+pub struct PlistBinIndex
+    // The width in bytes of one entry in the offset table: 1, 2, 4 or
+    // 8.
+    offset_width: Int
+    // The width in bytes of one object reference: 1, 2, 4 or 8.
+    ref_width: Int
+    // How many objects the file holds.
+    object_count: Int
+    // Which object is the root.
+    root: Int
+    // Where the offset table starts.
+    table_start: Int
+    // The offset table itself: `object_count` byte offsets, in order.
+    offsets: [Int]
+
+// What a reader is configured with.
+pub struct PlistLimits
+    // How deep a collection may nest.
+    max_depth: Int
+    // The largest buffer the reader will accept, in bytes.  A trailer
+    // is attacker-controlled, so a reader handed an object count larger
+    // than it is willing to hold should refuse before it allocates.
+    max_bytes: Int
+    // The largest number of objects the reader will accept.
+    max_objects: Int
+
+// The limits a reader uses when none are given: sixty-four levels, a
+// buffer of 64 MiB, and a million objects.
+//
+// ```novo
+// use plistbin
+//
+// fn main() [io]
+//     println("${plistbin.default_limits().max_depth}")   // 64
+// ```
+pub fn default_limits() -> PlistLimits []
+    todo("plist-nv.plistbin.default_limits")
+
+// Whether the buffer begins with `bplist00`.
+//
+// The cheapest possible question, and the one a caller that has both
+// forms asks before choosing a reader.
+//
+// ```novo
+// use std.bytes
+// use plistbin
+//
+// fn main() [io]
+//     println("${plistbin.is_binary(bytes.from_str("bplist00"))}")   // true
+// ```
+pub fn is_binary(src: Bytes) -> Bool []
+    todo("plist-nv.plistbin.is_binary")
+
+// The trailer and the offset table, with no value built.
+//
+// EVERY NUMBER CHECKED against the buffer: an offset table that starts
+// past the end, an object count the table cannot hold, a root outside
+// the table and an offset inside the trailer are all named refusals.  A
+// reader that trusted the trailer would be a reader that indexes
+// wherever the trailer says.
+//
+// ```novo
+// use std.bytes
+// use plistbin
+//
+// fn main() [io]
+//     match plistbin.read_index(bytes.zeros(8))
+//         Ok(_)  => println("this cannot happen")
+//         Err(e) => println(e.message())
+// ```
+pub fn read_index(src: Bytes) -> Result<PlistBinIndex, PlistFault> []
+    todo("plist-nv.plistbin.read_index")
+
+// The root value of a binary property list.
+//
+// ```novo
+// use std.bytes
+// use plistbin
+//
+// fn main() [io]
+//     match plistbin.read(bytes.zeros(0))
+//         Ok(_)  => println("this cannot happen — an empty buffer is not a file")
+//         Err(e) => println(e.message())
+// ```
+pub fn read(src: Bytes) -> Result<PlistValue, PlistFault> []
+    todo("plist-nv.plistbin.read")
+
+// The same, under limits the caller chose.
+pub fn read_with(src: Bytes, limits: PlistLimits) -> Result<PlistValue, PlistFault> []
+    todo("plist-nv.plistbin.read_with")
+
+// One object out of the table, by its index, with its own references
+// followed.
+//
+// What a tool showing a file's object graph uses, and what a caller
+// reading an NSKeyedArchiver archive follows a `PlistUid` with — a UID
+// is an index into exactly this table.
+//
+// ```novo
+// use std.bytes
+// use plistbin
+//
+// fn main() [io]
+//     match plistbin.object_at(bytes.zeros(0), 0)
+//         Ok(_)  => println("this cannot happen")
+//         Err(e) => println(e.message())
+// ```
+pub fn object_at(src: Bytes, index: Int) -> Result<PlistValue, PlistFault> []
+    todo("plist-nv.plistbin.object_at")
+
+// The marker byte of the object at an index, without reading its
+// payload.
+//
+// The four high bits are the kind and the four low bits are a length or
+// a width; `marker_kind_name` spells the high half.  What a file
+// inspector prints beside each row of the offset table.
+pub fn marker_at(src: Bytes, index: Int) -> Result<Int, PlistFault> []
+    todo("plist-nv.plistbin.marker_at")
+
+// The name of the kind a marker's high four bits denote: `"null"`,
+// `"boolean"`, `"integer"`, `"real"`, `"date"`, `"data"`,
+// `"ascii-string"`, `"utf16-string"`, `"uid"`, `"array"`, `"set"`,
+// `"dictionary"`.
+//
+// ```novo
+// use plistbin
+//
+// fn main() [io]
+//     println(plistbin.marker_kind_name(160))   // array
+// ```
+pub fn marker_kind_name(marker: Int) -> Str []
+    todo("plist-nv.plistbin.marker_kind_name")
+
+// Whether the buffer is a sound binary property list, with no value
+// built.
+//
+// The whole walk — every marker, every reference, every offset, the
+// cycle check — and no allocation for the values.  What a validator
+// runs over a directory of files.
+pub fn validate(src: Bytes) -> Result<Bool, PlistFault> []
+    todo("plist-nv.plistbin.validate")
+
+// The bytes of a binary property list holding this value.
+//
+// EQUAL OBJECTS ARE STORED ONCE.  Two identical strings, integers,
+// dates or data buffers anywhere in the tree become one object with two
+// references, which is what Apple's own writer does and what makes the
+// object count of a file this package writes match the object count of
+// the same document written by `plutil -convert binary1`.  A writer
+// that did not deduplicate would produce a larger file that every tool
+// still reads, and a round trip whose object count changed.
+//
+// The widths in the trailer are the smallest that hold the file's own
+// numbers, which is also what Apple's writer chooses.
+//
+// ```novo
+// use std.bytes
+// use plistvalue
+// use plistbin
+//
+// fn main() [io]
+//     match plistbin.write(plistvalue.dict())
+//         Ok(b)  => println("${bytes.len(b)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn write(v: PlistValue) -> Result<Bytes, PlistFault> []
+    todo("plist-nv.plistbin.write")
+
+// The bytes, with equal objects NOT shared.
+//
+// Every value becomes its own object.  Slower to read and larger on
+// disk, and the one way to write a file whose object graph is a tree —
+// which a tool comparing two files object by object, and a test that
+// wants a predictable table, both want.
+pub fn write_unshared(v: PlistValue) -> Result<Bytes, PlistFault> []
+    todo("plist-nv.plistbin.write_unshared")
+
+// How many distinct objects the value will be written as.
+//
+// The number `read_index` answers for the file this would produce, and
+// the one a caller compares against `plutil`'s output.
+//
+// ```novo
+// use plistvalue
+// use plistbin
+//
+// fn main() [io]
+//     match plistbin.object_count(plistvalue.dict())
+//         Ok(n)  => println("${n}")   // 1
+//         Err(e) => println(e.message())
+// ```
+pub fn object_count(v: PlistValue) -> Result<Int, PlistFault> []
+    todo("plist-nv.plistbin.object_count")
