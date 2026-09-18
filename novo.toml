@@ -46,8 +46,8 @@ novo        = ">= 0.9.0"
 # wrong.  `plistxml.from_document` takes xml-nv's own tree, so a caller
 # that has already parsed the file does not parse it twice.
 #
-# `core`, so the layer rule holds.  `^0.0.1` pins exactly 0.0.1, which
+# `core`, so the layer rule holds.  `^0.0.2` pins exactly 0.0.2, which
 # is an INTERFACE release: its bodies are `todo()` too, so plist-nv's
 # XML half cannot be implemented before xml-nv's is.  That order is
 # stated in the README rather than discovered at the first body.
-xml-nv = "^0.0.1"
+xml-nv = "^0.0.2"

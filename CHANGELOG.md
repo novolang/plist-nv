@@ -59,8 +59,8 @@ doc comment; every body is `todo()`; the release is recorded
 - `novo test` is red, and that is the release's expected state: every
   assertion in the API suite reaches `not implemented:
   plist-nv.<module>.<fn>`.
-- **The XML half cannot be implemented before xml-nv's is.** `^0.0.1`
-  pins exactly 0.0.1, which is itself an interface release whose bodies
+- **The XML half cannot be implemented before xml-nv's is.** `^0.0.2`
+  pins exactly 0.0.2, which is itself an interface release whose bodies
   are `todo()`. The binary half depends on nothing and can be
   implemented first, and the README says so.
 - **`plutil` is named as the oracle but no corpus is generated.** The

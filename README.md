@@ -279,8 +279,8 @@ time as bodies land.
 | `plistxml.date_text`, `.date_seconds` | no |
 | `plistfmt.format_name`, `.detect`, `.read`, `.write`, `.convert`, `.can_write` | no |
 
-The XML half cannot be implemented before xml-nv's is: `^0.0.1` pins
-exactly 0.0.1, which is itself an interface release whose bodies are
+The XML half cannot be implemented before xml-nv's is: `^0.0.2` pins
+exactly 0.0.2, which is itself an interface release whose bodies are
 `todo()`. The binary half depends on nothing and can be implemented
 first.
 
