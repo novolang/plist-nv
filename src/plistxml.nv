@@ -1,32 +1,34 @@
-// plistxml — the XML form, over xml-nv.
+// plistxml — the XML form, read through xml-nv and written back.
 //
-// Every body is a `todo()`.  The signatures are the design, and the
-// compiler checks them as claims; see the README for the stamp.
+// A property list file is an `<?xml?>` declaration, Apple's DOCTYPE,
+// and a `<plist version="1.0">` element holding one value.  The
+// document type has eleven element names: `plist`, `dict`, `key`,
+// `array`, `string`, `integer`, `real`, `data`, `date`, `true` and
+// `false`.  xml-nv reads the text, and this module reads the property
+// list out of xml-nv's tree, so `from_document` also serves a caller
+// that has built the tree already.
 //
-// THE XML IS READ BY XML-NV AND NOT BY A SCANNER OF THIS PACKAGE'S OWN.
-// The property list document type is small — eleven element names, no
-// namespaces, no mixed content — and it would be easy to write a
-// scanner for it.  It would also be a second XML parser, with the same
-// escaping, entity, encoding and well-formedness decisions to get
-// wrong, sitting beside one that has already made them.  So this module
-// takes xml-nv's tree, and `from_document` is on the surface for the
-// caller that has already built one.
+// One rule of the format is not in its document type: a `<dict>`'s
+// children alternate `<key>` and a value, starting with a key.  The
+// reader checks it and answers `PlistBadDictShape`.
 //
-// THE DOCUMENT TYPE.  A property list file is an `<?xml?>` declaration,
-// the Apple DOCTYPE, and a `<plist version="1.0">` element with exactly
-// one child.  The eleven elements are `plist`, `dict`, `key`, `array`,
-// `string`, `integer`, `real`, `data`, `date`, `true` and `false`.
+// A set and a UID have no element in the document type.  The writer
+// refuses them by kind, and `plistvalue.xml_blockers` finds them first.
+// XML 1.0 has no way to write most control characters, so a string
+// holding one is refused as well.
 //
-// THE ONE SHAPE RULE THE DOCUMENT TYPE CANNOT EXPRESS is that a
-// `<dict>`'s children alternate `<key>` and a value, starting with a
-// key.  A DTD can say a dict holds keys and values in any order; it
-// cannot say they alternate.  So every reader checks it by hand, and
-// `PlistBadDictShape` is this one's answer.
-//
-// TWO VALUES HAVE NO SPELLING HERE: a set and a UID exist in the binary
-// form and not in this document type.  The writer refuses them by name
-// rather than converting, and `plistvalue.xml_blockers` finds them
-// before the writer does.
+// The writer lays a file out as Python's plistlib and Apple's writer
+// do: one element per line, a tab per level of nesting inside the
+// root value, `<dict/>` and `<array/>` for an empty collection, and a
+// `<data>` element's base64 on lines of its own.
+
+use std.str
+use std.list
+use std.bytes
+use std.float
+use xmltree
+use xmlerror
+use plistvalue
 
 // Whether the text begins as an XML property list: an `<?xml?>`
 // declaration, a DOCTYPE, or a `<plist` element, after any leading
@@ -39,7 +41,11 @@
 //     println("${plistxml.is_xml("<?xml version=\"1.0\"?>")}")   // true
 // ```
 pub fn is_xml(text: Str) -> Bool []
-    todo("plist-nv.plistxml.is_xml")
+    var t = text
+    if str.starts_with(t, "\u{FEFF}")
+        t = str.slice(t, 3, str.len(t))
+    t = str.trim_start(t)
+    str.starts_with(t, "<?xml") or str.starts_with(t, "<!DOCTYPE") or str.starts_with(t, "<plist")
 
 // The root value of an XML property list.
 //
@@ -56,32 +62,48 @@ pub fn is_xml(text: Str) -> Bool []
 //         Err(e) => println(e.message())
 // ```
 pub fn read(text: Str) -> Result<PlistValue, PlistFault> []
-    todo("plist-nv.plistxml.read")
+    match xmltree.build_strict(text)
+        Ok(doc) => from_document(doc)
+        Err(f)  => Err(PlistBadXml(f.at, xmlerror.message(f)))
 
 // The same, from a tree xml-nv has already built.
 //
-// For the caller that parsed the file for another reason, and for one
-// that wants xml-nv's own recovery behaviour rather than this module's
-// refusal.
+// For a caller that parsed the file for another reason, or that built
+// the tree with xml-nv's recovering `build`.  The document's root
+// element must be `plist`.
 pub fn from_document(doc: xmltree.XmlDocument) -> Result<PlistValue, PlistFault> []
-    todo("plist-nv.plistxml.from_document")
+    value_at(doc, xmltree.root(doc))
 
 // One value from an element of an xml-nv tree, by its index.
 //
-// What a caller reading a property list embedded inside a larger XML
-// document uses — a `<plist>` inside a provisioning profile, inside a
-// manifest — without cutting the text out first.
+// A `plist` element answers the value it holds, and any other element
+// the value it spells, so a property list embedded in a larger XML
+// document is read without cutting its text out.  The document node's
+// index reads the root element, which must be `plist`.
 pub fn value_at(doc: xmltree.XmlDocument, index: Int) -> Result<PlistValue, PlistFault> []
-    todo("plist-nv.plistxml.value_at")
+    var i = index
+    if i == xmltree.root(doc)
+        i = xmltree.document_element(doc) ?? -1
+        if i < 0
+            return Err(PlistBadRoot(0, "no element"))
+        if xmltree.tag_of(doc, i) != "plist"
+            return Err(PlistBadRoot(at(doc, i), xmltree.tag_of(doc, i)))
+    if not xmltree.is_element(doc, i)
+        return Err(PlistBadRoot(at(doc, i), "not an element"))
+    if xmltree.tag_of(doc, i) == "plist"
+        return plist_body(doc, i)
+    element_value(doc, i)
 
 // The value as an XML property list, with the declaration, the DOCTYPE
 // and the `plist` element.
 //
-// Tabs for indentation and one child per line, which is what Apple's
-// own writer produces, so a file this package writes and a file
-// `plutil -convert xml1` writes differ only where the values do.
+// One element per line and a tab per level of nesting, as Python's
+// plistlib writes it: the text equals plistlib's for the same value
+// written with `sort_keys=False`.  A carriage return in a string is
+// written `&#13;`, which plistlib turns into a line feed instead.
 //
-// `PlistNoXmlSpelling` when the value holds a set or a UID anywhere
+// `PlistNoXmlSpelling` when the value holds a set, a UID or a control
+// character other than tab, line feed and carriage return anywhere
 // inside it.
 //
 // ```novo
@@ -94,20 +116,21 @@ pub fn value_at(doc: xmltree.XmlDocument, index: Int) -> Result<PlistValue, Plis
 //         Err(e) => println(e.message())
 // ```
 pub fn write(v: PlistValue) -> Result<Str, PlistFault> []
-    todo("plist-nv.plistxml.write")
+    let body = write_fragment(v)!
+    Ok("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + doctype() + "\n" + body)
 
 // The value as the `plist` element alone, with no declaration and no
 // DOCTYPE.
 //
-// For embedding one property list inside another XML document, which is
-// what a provisioning profile and a launchd job description both do.
+// For embedding one property list inside another XML document.
 pub fn write_fragment(v: PlistValue) -> Result<Str, PlistFault> []
-    todo("plist-nv.plistxml.write_fragment")
+    var lines: [Str] = ["<plist version=\"1.0\">"]
+    write_value(v, 0, lines)!
+    list.push(lines, "</plist>")
+    Ok(str.join(lines, "\n") + "\n")
 
 // The Apple DOCTYPE line, exactly as every property list carries it.
 //
-// A function rather than a constant a caller retypes, and the thing a
-// test asserts against.
 //
 // ```novo
 // use plistxml
@@ -116,14 +139,12 @@ pub fn write_fragment(v: PlistValue) -> Result<Str, PlistFault> []
 //     println(plistxml.doctype())
 // ```
 pub fn doctype() -> Str []
-    todo("plist-nv.plistxml.doctype")
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
 
 // The eleven element names the property list document type defines.
 //
 // `plist`, `dict`, `key`, `array`, `string`, `integer`, `real`, `data`,
-// `date`, `true`, `false`.  Exposed because a caller validating a file
-// against the document type before reading it needs the list, and
-// because a reader of this package should be able to check the claim.
+// `date`, `true`, `false`.
 //
 // ```novo
 // use plistxml
@@ -132,15 +153,14 @@ pub fn doctype() -> Str []
 //     println("${list.len(plistxml.element_names())}")   // 11
 // ```
 pub fn element_names() -> [Str] []
-    todo("plist-nv.plistxml.element_names")
+    ["plist", "dict", "key", "array", "string", "integer", "real", "data", "date", "true", "false"]
 
 // A date's seconds as the ISO 8601 text a `<date>` element carries.
 //
-// `"2001-01-01T00:00:00Z"` for zero.  Always UTC with a `Z` and always
-// whole seconds, which is what Apple's writer produces — a property
-// list date has a fractional part in the binary form and the XML form
-// has nowhere to put it, and that loss is named here rather than
-// discovered on a round trip.
+// `"2001-01-01T00:00:00Z"` for zero.  Always UTC with a `Z` and whole
+// seconds, as Apple's writer and plistlib write it.  A fractional part
+// is dropped, rounding towards the earlier second, so a date with one
+// does not survive a round trip through the XML form.
 //
 // ```novo
 // use plistxml
@@ -149,14 +169,21 @@ pub fn element_names() -> [Str] []
 //     println(plistxml.date_text(0.0))   // 2001-01-01T00:00:00Z
 // ```
 pub fn date_text(reference_seconds: Float) -> Str []
-    todo("plist-nv.plistxml.date_text")
+    var whole = float.to_int(reference_seconds)
+    if (whole as Float) > reference_seconds
+        whole = whole - 1
+    let days = floor_div(whole, 86400) + 11323
+    let secs = whole - floor_div(whole, 86400) * 86400
+    let (y, m, d) = civil_from_days(days)
+    "${pad(y, 4)}-${pad(m, 2)}-${pad(d, 2)}T${pad(secs / 3600, 2)}:${pad(secs / 60 % 60, 2)}:${pad(secs % 60, 2)}Z"
 
 // The seconds an ISO 8601 `<date>` text denotes, counted from the
 // reference instant.
 //
-// `PlistBadText` for text that is not that shape.  A zone offset other
-// than `Z` is accepted and converted, because files in the wild carry
-// them.
+// The text is `YYYY-MM-DDThh:mm:ss` followed by `Z` or by an offset
+// `+hh:mm` or `-hh:mm`, which is converted.  The parts after the year
+// may be left off from the right, as plistlib allows: `2001-02Z` is
+// the first of February.  Any other text is `PlistBadText` at byte 0.
 //
 // ```novo
 // use plistxml
@@ -167,4 +194,417 @@ pub fn date_text(reference_seconds: Float) -> Str []
 //         Err(e) => println(e.message())
 // ```
 pub fn date_seconds(text: Str) -> Result<Float, PlistFault> []
-    todo("plist-nv.plistxml.date_seconds")
+    let f = date_fields(text)
+    if list.len(f) != 7
+        return Err(PlistBadText(0, "date", text))
+    let days = days_from_civil(f[0], f[1], f[2]) - 11323
+    Ok((days * 86400 + f[3] * 3600 + f[4] * 60 + f[5] - f[6]) as Float)
+
+// The byte offset where node `i` starts.
+fn at(doc: xmltree.XmlDocument, i: Int) -> Int
+    doc.nodes[i].span.start
+
+// The one value inside a `plist` element.
+fn plist_body(doc: xmltree.XmlDocument, i: Int) -> Result<PlistValue, PlistFault>
+    let version = xmltree.attr(doc, i, "version") ?? "1.0"
+    if version != "1.0"
+        return Err(PlistBadRoot(at(doc, i), "version ${version}"))
+    stray_text(doc, i, "plist")!
+    let kids = xmltree.element_children(doc, i)
+    if list.len(kids) != 1
+        return Err(PlistBadRoot(at(doc, i), "${list.len(kids)} values"))
+    element_value(doc, kids[0])
+
+// `Ok(0)`, or the fault for text other than white space directly inside
+// element `i`, where only elements may be.
+fn stray_text(doc: xmltree.XmlDocument, i: Int, name: Str) -> Result<Int, PlistFault>
+    for c in xmltree.children(doc, i)
+        let t = str.trim(xmltree.text_of(doc, c))
+        if t != "" and not is_comment(doc, c)
+            return Err(PlistBadText(at(doc, c), name, t))
+    Ok(0)
+
+// Whether node `c` is a comment or a processing instruction, whose text
+// is not content.
+fn is_comment(doc: xmltree.XmlDocument, c: Int) -> Bool
+    match doc.nodes[c].kind
+        XmlCommentNode(_) => true
+        XmlPiNode(_, _)   => true
+        _                 => false
+
+// The value element `i` spells.
+fn element_value(doc: xmltree.XmlDocument, i: Int) -> Result<PlistValue, PlistFault>
+    let tag = xmltree.tag_of(doc, i)
+    if tag == "dict"
+        return dict_value(doc, i)
+    if tag == "array"
+        stray_text(doc, i, tag)!
+        var items: [PlistValue] = []
+        for c in xmltree.element_children(doc, i)
+            list.push(items, element_value(doc, c)!)
+        return Ok(PlistArray(items))
+    if not list.contains(["string", "integer", "real", "date", "data", "true", "false"], tag)
+        return Err(PlistUnknownElement(at(doc, i), tag))
+    let inner = xmltree.element_children(doc, i)
+    if list.len(inner) > 0
+        return Err(PlistUnknownElement(at(doc, inner[0]), xmltree.tag_of(doc, inner[0])))
+    scalar_value(tag, xmltree.inner_text(doc, i), at(doc, i))
+
+// A scalar element's value from its name and its text.
+fn scalar_value(tag: Str, text: Str, where: Int) -> Result<PlistValue, PlistFault>
+    if tag == "string"
+        return Ok(PlistString(text))
+    if tag == "true" or tag == "false"
+        return Ok(PlistBool(tag == "true"))
+    if tag == "integer"
+        return integer_value(str.trim(text), where)
+    if tag == "real"
+        return real_value(str.trim(text), where)
+    if tag == "data"
+        let b = bytes.from_base64(without_space(text)) ?? bytes.zeros(0)
+        if bytes.len(b) == 0 and without_space(text) != ""
+            return Err(PlistBadBase64(where))
+        return Ok(PlistData(b))
+    match date_seconds(str.trim(text))
+        Ok(t)  => Ok(PlistDate(t))
+        Err(_) => Err(PlistBadText(where, "date", str.trim(text)))
+
+// A dictionary: alternating `key` elements and values.
+fn dict_value(doc: xmltree.XmlDocument, i: Int) -> Result<PlistValue, PlistFault>
+    stray_text(doc, i, "dict")!
+    let kids = xmltree.element_children(doc, i)
+    var entries: [PlistEntry] = []
+    for k in 0..list.len(kids)
+        let c = kids[k]
+        let tag = xmltree.tag_of(doc, c)
+        if k % 2 == 0 and tag != "key"
+            return Err(PlistBadDictShape(at(doc, c), "a ${tag} where a key belongs"))
+        if k % 2 == 1 and tag == "key"
+            return Err(PlistBadDictShape(at(doc, c), "two keys in a row"))
+        if k % 2 == 1
+            let key = xmltree.inner_text(doc, kids[k - 1])
+            list.push(entries, plistvalue.entry(key, element_value(doc, c)!))
+    if list.len(kids) % 2 == 1
+        return Err(PlistBadDictShape(at(doc, kids[list.len(kids) - 1]), "the last key has no value"))
+    Ok(PlistDict(entries))
+
+// An `integer` element's text: decimal with an optional sign, or
+// hexadecimal after `0x`.  A number outside the range of `Int` that
+// fits in sixteen bytes is a `PlistBigInteger`.
+fn integer_value(t: Str, where: Int) -> Result<PlistValue, PlistFault>
+    var neg = false
+    var digits = t
+    if str.starts_with(t, "-") or str.starts_with(t, "+")
+        neg = str.starts_with(t, "-")
+        digits = str.slice(t, 1, str.len(t))
+    var base = 10
+    if str.starts_with(digits, "0x") or str.starts_with(digits, "0X")
+        base = 16
+        digits = str.slice(digits, 2, str.len(digits))
+    let mag = magnitude(digits, base)
+    if list.len(mag) != 16 or (mag[0] & 128) != 0 and not (neg and is_min(mag))
+        return Err(PlistBadText(where, "integer", t))
+    var fits = mag[8] < 128 or neg and is_min_int(mag)
+    for j in 0..8
+        if mag[j] != 0
+            fits = false
+    if fits
+        var n = 0
+        for j in 8..16
+            n = (n << 8) | mag[j]
+        if neg and n > 0
+            n = 0 - n
+        return Ok(PlistInteger(n))
+    if neg
+        return Ok(PlistBigInteger(bytes.from_byte_list(negated(mag))))
+    Ok(PlistBigInteger(bytes.from_byte_list(mag)))
+
+// The sixteen big-endian bytes of the digits' value in `base`, or an
+// empty list when a character is not a digit or the value needs more.
+fn magnitude(digits: Str, base: Int) -> [Int]
+    if digits == ""
+        return []
+    var mag = list.zeros(16)
+    for i in 0..str.len(digits)
+        let d = digit_value(str.byte_at_or(digits, i, 0))
+        if d < 0 or d >= base
+            return []
+        var carry = d
+        for j in 0..16
+            let k = 15 - j
+            let x = mag[k] * base + carry
+            mag[k] = x & 255
+            carry = x >> 8
+        if carry != 0
+            return []
+    mag
+
+// A digit's value, or -1.
+fn digit_value(b: Int) -> Int
+    if b >= '0' and b <= '9'
+        return b - '0'
+    if b >= 'a' and b <= 'f'
+        return b - 'a' + 10
+    if b >= 'A' and b <= 'F'
+        return b - 'A' + 10
+    -1
+
+// Whether sixteen bytes are 2^127, the one magnitude a negative
+// sixteen-byte number reaches that a positive one does not.
+fn is_min(mag: [Int]) -> Bool
+    if mag[0] != 128
+        return false
+    for j in 1..16
+        if mag[j] != 0
+            return false
+    true
+
+// Whether sixteen bytes are 2^63, which is `Int`'s most negative
+// magnitude.
+fn is_min_int(mag: [Int]) -> Bool
+    if mag[8] != 128
+        return false
+    for j in 9..16
+        if mag[j] != 0
+            return false
+    true
+
+// The two's complement negation of sixteen bytes.
+fn negated(mag: [Int]) -> [Int]
+    var out = list.zeros(16)
+    var carry = 1
+    for j in 0..16
+        let k = 15 - j
+        let x = 255 - mag[k] + carry
+        out[k] = x & 255
+        carry = x >> 8
+    out
+
+// A `real` element's text as the float it names.
+fn real_value(t: Str, where: Int) -> Result<PlistValue, PlistFault>
+    match str.to_float(t)
+        Some(f) => Ok(PlistReal(f))
+        None    => Err(PlistBadText(where, "real", t))
+
+// Text with every space, tab, carriage return and line feed removed.
+fn without_space(t: Str) -> Str
+    str.replace_all(str.replace_all(str.replace_all(str.replace_all(t, " ", ""), "\t", ""), "\n", ""), "\r", "")
+
+// The seven numbers of an ISO 8601 date: year, month, day, hour, minute,
+// second and the zone's offset in seconds, or an empty list when the
+// text is not one.  The month and the parts after it may be left off,
+// as Python's plistlib allows, and the zone is `Z` or `+hh:mm`.
+fn date_fields(t: Str) -> [Int]
+    var f: [Int] = [0, 1, 1, 0, 0, 0, 0]
+    let seps = ["", "-", "-", "T", ":", ":"]
+    let widths = [4, 2, 2, 2, 2, 2]
+    var pos = 0
+    for k in 0..6
+        if k > 0 and not str.starts_with(str.slice(t, pos, str.len(t)), seps[k])
+            return zoned(t, pos, f)
+        if k > 0
+            pos = pos + 1
+        let n = str.to_int(str.slice(t, pos, pos + widths[k])) ?? -1
+        if n < 0 or not all_digits(str.slice(t, pos, pos + widths[k]))
+            return []
+        f[k] = n
+        pos = pos + widths[k]
+    zoned(t, pos, f)
+
+// `f` with the zone that starts at `pos` added and the fields checked,
+// or an empty list.
+fn zoned(t: Str, pos: Int, f: [Int]) -> [Int]
+    let rest = str.slice(t, pos, str.len(t))
+    var out = f[:]
+    if rest != "Z"
+        if str.len(rest) != 6 or str.slice(rest, 3, 4) != ":" or not all_digits(str.slice(rest, 1, 3) + str.slice(rest, 4, 6))
+            return []
+        let offset = (str.to_int(str.slice(rest, 1, 3)) ?? 0) * 3600 + (str.to_int(str.slice(rest, 4, 6)) ?? 0) * 60
+        if str.starts_with(rest, "+")
+            out[6] = offset
+        else if str.starts_with(rest, "-")
+            out[6] = 0 - offset
+        else
+            return []
+    if out[1] < 1 or out[1] > 12 or out[2] < 1 or out[2] > days_in_month(out[0], out[1])
+        return []
+    if out[3] > 23 or out[4] > 59 or out[5] > 59
+        return []
+    out
+
+// Whether every byte of a text is an ASCII digit.
+fn all_digits(t: Str) -> Bool
+    for i in 0..str.len(t)
+        let b = str.byte_at_or(t, i, 0)
+        if b < '0' or b > '9'
+            return false
+    true
+
+// The number of days in a month of the proleptic Gregorian calendar.
+fn days_in_month(y: Int, m: Int) -> Int
+    if m == 2
+        if y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)
+            return 29
+        return 28
+    if m == 4 or m == 6 or m == 9 or m == 11
+        return 30
+    31
+
+// Days from 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(y0: Int, m: Int, d: Int) -> Int
+    var y = y0
+    if m <= 2
+        y = y - 1
+    let era = floor_div(y, 400)
+    let yoe = y - era * 400
+    var mp = m - 3
+    if m <= 2
+        mp = m + 9
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+
+// The civil date `z` days after 1970-01-01 (Howard Hinnant's
+// algorithm).
+fn civil_from_days(z0: Int) -> (Int, Int, Int)
+    let z = z0 + 719468
+    let era = floor_div(z, 146097)
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    var m = mp + 3
+    var y = yoe + era * 400
+    if mp >= 10
+        m = mp - 9
+        y = y + 1
+    (y, m, d)
+
+// `a / b` rounded towards negative infinity, for a positive `b`.
+fn floor_div(a: Int, b: Int) -> Int
+    if a >= 0
+        return a / b
+    0 - (b - 1 - a) / b
+
+// `n` in decimal, with zeros in front to `w` digits.
+fn pad(n: Int, w: Int) -> Str
+    str.pad_left("${n}", w, "0")
+
+// Push the lines of `v` at nesting level `level` onto `lines`.
+fn write_value(v: PlistValue, level: Int, var lines: [Str]) -> Result<Int, PlistFault>
+    let tabs = str.repeat("\t", level)
+    match v
+        PlistDict(es)      =>
+            if list.len(es) == 0
+                list.push(lines, tabs + "<dict/>")
+                return Ok(0)
+            list.push(lines, tabs + "<dict>")
+            for e in es
+                list.push(lines, tabs + "\t<key>" + escaped(e.key)! + "</key>")
+                write_value(e.value, level + 1, lines)!
+            list.push(lines, tabs + "</dict>")
+        PlistArray(xs)     =>
+            if list.len(xs) == 0
+                list.push(lines, tabs + "<array/>")
+                return Ok(0)
+            list.push(lines, tabs + "<array>")
+            for x in xs
+                write_value(x, level + 1, lines)!
+            list.push(lines, tabs + "</array>")
+        PlistData(b)       =>
+            list.push(lines, tabs + "<data>")
+            for line in base64_lines(b, level)
+                list.push(lines, tabs + line)
+            list.push(lines, tabs + "</data>")
+        PlistSet(_)        =>
+            return Err(PlistNoXmlSpelling("set"))
+        PlistUid(_)        =>
+            return Err(PlistNoXmlSpelling("uid"))
+        PlistBool(b)       =>
+            if b
+                list.push(lines, tabs + "<true/>")
+            else
+                list.push(lines, tabs + "<false/>")
+        PlistInteger(n)    => list.push(lines, tabs + "<integer>${n}</integer>")
+        PlistBigInteger(b) =>
+            if bytes.len(b) != 16
+                return Err(PlistBadIntegerWidth(0, bytes.len(b)))
+            list.push(lines, tabs + "<integer>${big_decimal(b)}</integer>")
+        PlistReal(f)       => list.push(lines, tabs + "<real>${real_text(f)}</real>")
+        PlistDate(t)       => list.push(lines, tabs + "<date>${date_text(t)}</date>")
+        PlistString(t)     => list.push(lines, tabs + "<string>" + escaped(t)! + "</string>")
+    Ok(0)
+
+// Text escaped for XML character data.  A carriage return is written as
+// a character reference so that it survives a read; any other control
+// character but tab and line feed has no XML 1.0 spelling.
+fn escaped(t: Str) -> Result<Str, PlistFault>
+    for i in 0..str.len(t)
+        let b = str.byte_at_or(t, i, 0)
+        if b < 32 and b != '\t' and b != '\n' and b != '\r'
+            return Err(PlistNoXmlSpelling("control character"))
+    Ok(str.replace_all(str.replace_all(str.replace_all(str.replace_all(t, "&", "&amp;"), "<", "&lt;"), ">", "&gt;"),
+        "\r",
+        "&#13;"))
+
+// Data's base64 in lines as long as Python's plistlib writes them at
+// nesting level `level`: 76 columns less 8 for each tab, and 16 at the
+// least.
+fn base64_lines(b: Bytes, level: Int) -> [Str]
+    var width = 76 - 8 * level
+    if width < 16
+        width = 16
+    let chunk = width / 4 * 3
+    let n = bytes.len(b)
+    var out: [Str] = []
+    for k in 0..(n + chunk - 1) / chunk
+        var to = k * chunk + chunk
+        if to > n
+            to = n
+        list.push(out, bytes.to_base64(bytes.slice(b, k * chunk, to)))
+    out
+
+// A float as Python's `repr` writes it, which is what plistlib puts in
+// a `<real>`.
+fn real_text(f: Float) -> Str
+    let t = str.from_float_shortest(f)
+    if str.contains(t, ".") or str.contains(t, "e") or str.contains(t, "n")
+        return t
+    var sign = ""
+    var digits = t
+    if str.starts_with(t, "-")
+        sign = "-"
+        digits = str.slice(t, 1, str.len(t))
+    if str.len(digits) <= 16
+        return t + ".0"
+    var mantissa = digits
+    while str.ends_with(mantissa, "0")
+        mantissa = str.slice(mantissa, 0, str.len(mantissa) - 1)
+    if str.len(mantissa) > 1
+        mantissa = str.slice(mantissa, 0, 1) + "." + str.slice(mantissa, 1, str.len(mantissa))
+    "${sign}${mantissa}e+${str.len(digits) - 1}"
+
+// Sixteen big-endian two's complement bytes in decimal.
+fn big_decimal(b: Bytes) -> Str
+    var mag = bytes.to_byte_list(b) |> list.map(byte_int)
+    var sign = ""
+    if (mag[0] & 128) != 0
+        sign = "-"
+        mag = negated(mag)
+    var digits: [Str] = []
+    var zero = false
+    while not zero
+        var rem = 0
+        zero = true
+        for j in 0..16
+            let x = rem * 256 + mag[j]
+            mag[j] = x / 10
+            rem = x % 10
+            if mag[j] != 0
+                zero = false
+        list.push(digits, "${rem}")
+    sign + str.join(list.reverse(digits), "")
+
+fn byte_int(b: u8) -> Int
+    b as Int
