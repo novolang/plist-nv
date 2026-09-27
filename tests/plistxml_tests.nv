@@ -1,0 +1,145 @@
+// plistxml_tests.nv — the XML form's refusals, its integers and dates,
+// and the writer's corners.
+
+use std.test
+use std.str
+use std.bytes
+use std.float
+use xmltree
+use plisterror
+use plistvalue
+use plistxml
+
+fn wrap(inner: Str) -> Str
+    "<plist version=\"1.0\">" + inner + "</plist>"
+
+fn read(inner: Str) -> Result<PlistValue, PlistFault>
+    plistxml.read(wrap(inner))
+
+fn code(r: Result<PlistValue, PlistFault>) -> Str
+    match r
+        Ok(v)  => "ok:" + plistvalue.kind_name(v)
+        Err(e) => plisterror.code_of(e)
+
+fn written(r: Result<Str, PlistFault>) -> Str
+    match r
+        Ok(t)  => t
+        Err(e) => e.message()
+
+@test
+fn test_the_form_is_recognised_after_a_byte_order_mark_or_space() [io]
+    test.assert(plistxml.is_xml("\u{FEFF}<?xml version=\"1.0\"?>"))
+    test.assert(plistxml.is_xml("  \n<!DOCTYPE plist>"))
+    test.assert(plistxml.is_xml("<plist>"))
+    test.assert(not plistxml.is_xml("{ a = b; }"))
+
+@test
+fn test_the_root_and_its_one_value() [io]
+    test.assert(plistxml.from_document(xmltree.build("")) == Err(PlistBadRoot(0, "no element")))
+    test.assert(plistxml.read("<plist version=\"2.0\"><true/></plist>") == Err(PlistBadRoot(0, "version 2.0")))
+    test.assert(plistxml.read("<plist><true/><false/></plist>") == Err(PlistBadRoot(0, "2 values")))
+    test.assert(plistxml.read("<plist/>") == Err(PlistBadRoot(0, "0 values")))
+    test.assert_eq(code(plistxml.read("<plist>x<true/></plist>")), "bad-text")
+    let doc = xmltree.build(wrap("<string>x</string>"))
+    test.assert(plistxml.value_at(doc, 2) == Ok(PlistString("x")))
+    test.assert(plistxml.value_at(doc, 3) == Err(PlistBadRoot(32, "not an element")))
+    test.assert(plistxml.value_at(doc, 1) == Ok(PlistString("x")))
+
+@test
+fn test_what_a_container_may_hold() [io]
+    test.assert(read("<dict>junk<key>a</key><true/></dict>") == Err(PlistBadText(26, "dict", "junk")))
+    test.assert(read("<dict><!-- a note --><key>a</key><true/><?pi x?></dict>")
+                == Ok(plistvalue.dict_of([plistvalue.entry("a", PlistBool(true))])))
+    test.assert(read("<array> <true/> </array>") == Ok(PlistArray([PlistBool(true)])))
+    test.assert(read("<string>a<b/></string>") == Err(PlistUnknownElement(29, "b")))
+    test.assert(read("<key>a</key>") == Err(PlistUnknownElement(21, "key")))
+    test.assert(read("<dict><string>a</string></dict>")
+                == Err(PlistBadDictShape(27, "a string where a key belongs")))
+    test.assert(read("<dict><key>a</key><key>b</key></dict>") == Err(PlistBadDictShape(39, "two keys in a row")))
+    test.assert_eq(code(read("<dict><key>a</key><plist/></dict>")), "unknown-element")
+
+@test
+fn test_scalars_and_their_text() [io]
+    test.assert(read("<string></string>") == Ok(PlistString("")))
+    test.assert(read("<string>a &amp; &#13;</string>") == Ok(PlistString("a & \r")))
+    test.assert(read("<data> AAEC\n\tAw== </data>") == Ok(PlistData(bytes.from_hex("00010203") ?? bytes.zeros(0))))
+    test.assert(read("<data></data>") == Ok(PlistData(bytes.zeros(0))))
+    test.assert(read("<data>!!!!</data>") == Err(PlistBadBase64(21)))
+    test.assert(read("<real> 2.5 </real>") == Ok(PlistReal(2.5)))
+    test.assert(read("<real>two</real>") == Err(PlistBadText(21, "real", "two")))
+    test.assert(read("<date>yesterday</date>") == Err(PlistBadText(21, "date", "yesterday")))
+
+@test
+fn test_integers_in_every_spelling() [io]
+    let cases = [("7", PlistInteger(7)), ("+5", PlistInteger(5)), ("-12", PlistInteger(0 - 12)),
+                 ("0x1F", PlistInteger(31)), ("0XfF", PlistInteger(255)), ("-0x10", PlistInteger(0 - 16)),
+                 ("-9223372036854775808", PlistInteger(0 - 9223372036854775807 - 1)),
+                 ("9223372036854775808", big("00000000000000008000000000000000")),
+                 ("-9223372036854775809", big("ffffffffffffffff7fffffffffffffff")),
+                 ("18446744073709551616", big("00000000000000010000000000000000")),
+                 ("-170141183460469231731687303715884105728", big("80000000000000000000000000000000"))]
+    for c in cases
+        test.case(c.0)
+        test.assert(read("<integer>${c.0}</integer>") == Ok(c.1))
+    test.assert(read("<integer>-18446744073709551615</integer>") == Ok(big("ffffffffffffffff0000000000000001")))
+    for t in ["", "abc", "1.5", "0x", "170141183460469231731687303715884105728", "340282366920938463463374607431768211456",
+              "-170141183460469231731687303715884105729", "-340282366920938463463374607431768211455"]
+        test.case(t)
+        test.assert_eq(code(read("<integer>${t}</integer>")), "bad-text")
+
+fn big(h: Str) -> PlistValue
+    PlistBigInteger(bytes.from_hex(h) ?? bytes.zeros(0))
+
+@test
+fn test_dates_in_every_spelling() [io]
+    let cases = [("2001Z", 0.0), ("2001-02Z", 2678400.0), ("2001-01-02T03Z", 97200.0),
+                 ("2001-01-01T00:00:00+01:00", 0.0 - 3600.0), ("2001-01-01T00:00:00-01:30", 5400.0),
+                 ("2004-02-29T00:00:00Z", 100915200.0), ("1970-01-01T00:00:00Z", 0.0 - 978307200.0)]
+    for c in cases
+        test.case(c.0)
+        test.assert(plistxml.date_seconds(c.0) == Ok(c.1))
+    for t in ["2001-01-01T00:00:00+0100", "2001-01-01T00:00:00*01:00", "2001-13-01T00:00:00Z",
+              "2001-01-01T24:00:00Z", "2001-02-29T00:00:00Z", "2001-+1-01T00:00:00Z", "2001", "2001-04-31Z",
+              "2001-01-01T00:60Z", "2001-01-01T00:00:60Z", "2001-00Z", "2001-01-00Z"]
+        test.case(t)
+        test.assert(plistxml.date_seconds(t) == Err(PlistBadText(0, "date", t)))
+    test.assert_eq(plistxml.date_text(0.0 - 0.5), "2000-12-31T23:59:59Z")
+    test.assert_eq(plistxml.date_text(1.75), "2001-01-01T00:00:01Z")
+    test.assert_eq(plistxml.date_text(0.0 - 978307200.0 - 86400.0), "1969-12-31T00:00:00Z")
+
+@test
+fn test_the_writer_refuses_what_it_cannot_spell() [io]
+    test.assert_eq(written(plistxml.write(PlistArray([PlistSet([])]))),
+                   "a set has no spelling in the XML property list form")
+    test.assert_eq(written(plistxml.write(PlistString("bell\u{7}"))),
+                   "a control character has no spelling in the XML property list form")
+    test.assert_eq(written(plistxml.write(plistvalue.dict_of([plistvalue.entry("\u{1}", PlistBool(true))]))),
+                   "a control character has no spelling in the XML property list form")
+    test.assert_eq(written(plistxml.write(PlistBigInteger(bytes.zeros(8)))),
+                   "an integer of 8 bytes at byte 0 is not a width the format has")
+
+@test
+fn test_the_writer_corners() [io]
+    test.case("a carriage return survives a round trip")
+    match plistxml.write_fragment(PlistString("a\rb<&>"))
+        Ok(t)  =>
+            test.assert_eq(t, "<plist version=\"1.0\">\n<string>a&#13;b&lt;&amp;&gt;</string>\n</plist>\n")
+            test.assert(plistxml.read(t) == Ok(PlistString("a\rb<&>")))
+        Err(e) => test.fail(e.message())
+    test.case("reals as Python writes them")
+    let reals = [(float.from_bits(0 - 9223372036854775807 - 1), "-0.0"), (1.5e17, "1.5e+17"), (0.0 - 1.0e17, "-1e+17"), (0.0 - 2.0, "-2.0"),
+                 (1.0e16, "1e+16"), (1234567890123456.0, "1234567890123456.0"), (0.25, "0.25")]
+    for r in reals
+        test.case(r.1)
+        test.assert_eq(written(plistxml.write_fragment(PlistReal(r.0))),
+                       "<plist version=\"1.0\">\n<real>${r.1}</real>\n</plist>\n")
+    test.case("a negative big integer in decimal")
+    test.assert_eq(written(plistxml.write_fragment(big("ffffffffffffffff7fffffffffffffff"))),
+                   "<plist version=\"1.0\">\n<integer>-9223372036854775809</integer>\n</plist>\n")
+    test.case("data nested deeply keeps sixteen columns")
+    var v = PlistData(bytes.zeros(13))
+    for _ in 0..10
+        v = PlistArray([v])
+    let t = written(plistxml.write_fragment(v))
+    test.assert(str.contains(t, "\t\t\t\t\t\t\t\t\t\tAAAAAAAAAAAAAAAA\n"))
+    test.assert(plistxml.read(t) == Ok(v))

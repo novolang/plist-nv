@@ -1,0 +1,143 @@
+// plistvalue_tests.nv — the accessors on every kind, the dictionary
+// edits, the UID conversion, and every fault's message, offset and code.
+
+use std.test
+use std.list
+use std.bytes
+use plisterror
+use plistvalue
+
+fn kinds() -> [PlistValue]
+    [PlistBool(true), PlistInteger(1), PlistBigInteger(bytes.zeros(16)), PlistReal(1.0), PlistString("s"),
+     PlistDate(0.0), PlistData(bytes.zeros(1)), PlistArray([]), plistvalue.dict(), PlistSet([]), PlistUid(1)]
+
+fn wrong_kinds(r: [Str]) -> Int
+    list.len(list.filter(r, t => t == "wrong-kind"))
+
+fn code_of_bool(v: PlistValue) -> Str
+    match plistvalue.as_bool(v)
+        Ok(_)  => "ok"
+        Err(e) => plisterror.code_of(e)
+
+fn code_of_int(v: PlistValue) -> Str
+    match plistvalue.as_int(v)
+        Ok(_)  => "ok"
+        Err(e) => plisterror.code_of(e)
+
+fn code_of_float(v: PlistValue) -> Str
+    match plistvalue.as_float(v)
+        Ok(_)  => "ok"
+        Err(e) => plisterror.code_of(e)
+
+fn code_of_str(v: PlistValue) -> Str
+    match plistvalue.as_str(v)
+        Ok(_)  => "ok"
+        Err(e) => plisterror.code_of(e)
+
+fn code_of_date(v: PlistValue) -> Str
+    match plistvalue.as_date_seconds(v)
+        Ok(_)  => "ok"
+        Err(e) => plisterror.code_of(e)
+
+fn code_of_array(v: PlistValue) -> Str
+    match plistvalue.as_array(v)
+        Ok(_)  => "ok"
+        Err(e) => plisterror.code_of(e)
+
+fn code_of_dict(v: PlistValue) -> Str
+    match plistvalue.as_dict(v)
+        Ok(_)  => "ok"
+        Err(e) => plisterror.code_of(e)
+
+@test
+fn test_each_accessor_takes_one_kind() [io]
+    let ks = kinds()
+    test.assert_eq(wrong_kinds(list.map(ks, code_of_bool)), 10)
+    test.assert_eq(wrong_kinds(list.map(ks, code_of_int)), 10)
+    test.assert_eq(wrong_kinds(list.map(ks, code_of_float)), 10)
+    test.assert_eq(wrong_kinds(list.map(ks, code_of_str)), 10)
+    test.assert_eq(wrong_kinds(list.map(ks, code_of_date)), 10)
+    test.assert_eq(wrong_kinds(list.map(ks, code_of_array)), 10)
+    test.assert_eq(wrong_kinds(list.map(ks, code_of_dict)), 10)
+    test.assert_eq(list.map(ks, plistvalue.kind_name),
+                   ["boolean", "integer", "integer", "real", "string", "date", "data", "array", "dictionary",
+                    "set", "uid"])
+    test.assert(plistvalue.as_bool(PlistInteger(1)) == Err(PlistWrongKind("boolean", "integer")))
+    test.assert(plistvalue.as_data(PlistBool(true)) == Err(PlistWrongKind("data", "boolean")))
+    test.assert_eq(plistvalue.len(PlistSet([PlistBool(true)])), 1)
+    test.assert_eq(plistvalue.len(PlistInteger(3)), 0)
+    test.assert_eq(plistvalue.len(PlistArray([PlistBool(true), PlistBool(false)])), 2)
+
+@test
+fn test_dictionary_edits_on_other_kinds_change_nothing() [io]
+    let n = PlistInteger(3)
+    test.assert(plistvalue.append(n, "a", n) == n)
+    test.assert(plistvalue.replace(n, "a", n) == n)
+    test.assert(plistvalue.remove(n, "a") == n)
+    test.assert_eq(plistvalue.count_of(n, "a"), 0)
+    test.assert(plistvalue.get(n, "a") == Err(PlistWrongKind("dictionary", "integer")))
+    test.assert(plistvalue.path(n, ["a"]) == None)
+    test.assert(plistvalue.path(n, []) == Some(n))
+    test.case("replace appends a key that is not there")
+    let d = plistvalue.replace(plistvalue.dict(), "k", n)
+    test.assert(d == plistvalue.dict_of([plistvalue.entry("k", n)]))
+
+@test
+fn test_every_uid_becomes_a_cfuid_dictionary() [io]
+    let v = PlistArray([PlistUid(1), PlistSet([PlistUid(2)]),
+                        plistvalue.dict_of([plistvalue.entry("k", PlistUid(3))]), PlistBool(true)])
+    let want = PlistArray([cf(1), PlistSet([cf(2)]), plistvalue.dict_of([plistvalue.entry("k", cf(3))]),
+                           PlistBool(true)])
+    test.assert(plistvalue.as_cfuid_dict(v) == want)
+    test.assert_eq(plistvalue.xml_blockers(v), ["/0", "/1", "/2/k"])
+    test.assert_eq(plistvalue.xml_blockers(PlistUid(1)), ["/"])
+    test.assert_eq(plistvalue.xml_blockers(plistvalue.dict_of([plistvalue.entry("k", PlistSet([]))])), ["/k"])
+
+fn cf(n: Int) -> PlistValue
+    plistvalue.dict_of([plistvalue.entry("CF\$UID", PlistInteger(n))])
+
+fn every_fault() -> [PlistFault]
+    [PlistUnknownFormat, PlistBadMagic("78"), PlistUnsupportedBinaryVersion("99"), PlistTruncated(1, 2),
+     PlistBadTrailer("w"), PlistBadOffset(3, 4), PlistBadReference(5, 6), PlistUnknownMarker(7, 8),
+     PlistBadIntegerWidth(9, 3), PlistBadStringEncoding(10), PlistCycle(11, 0), PlistDepthExceeded(12, 65),
+     PlistBadRoot(13, "x"), PlistUnknownElement(14, "y"), PlistBadDictShape(15, "z"),
+     PlistBadText(16, "real", "q"), PlistBadBase64(17), PlistBadXml(18, "bad"), PlistNoXmlSpelling("uid"),
+     PlistWrongKind("a", "b"), PlistNoSuchKey("k"), PlistTooLarge(20, 10)]
+
+fn message_of(f: PlistFault) -> Str
+    f.message()
+
+@test
+fn test_every_fault_has_a_message_an_offset_and_a_code() [io]
+    let fs = every_fault()
+    test.assert_eq(list.map(fs, plisterror.offset_of),
+                   [0, 0, 0, 1, 0, 4, 5, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 0, 0, 0, 0])
+    test.assert_eq(list.map(fs, plisterror.code_of),
+                   ["unknown-format", "bad-magic", "unsupported-binary-version", "truncated", "bad-trailer",
+                    "bad-offset", "bad-reference", "unknown-marker", "bad-integer-width", "bad-string-encoding",
+                    "cycle", "depth-exceeded", "bad-root", "unknown-element", "bad-dict-shape", "bad-text",
+                    "bad-base64", "bad-xml", "no-xml-spelling", "wrong-kind", "no-such-key", "too-large"])
+    test.assert_eq(list.len(list.filter(fs, plisterror.is_file_fault)), 19)
+    test.assert_eq(list.map(fs, message_of),
+                   ["the bytes are neither an XML nor a binary property list",
+                    "the binary form begins with bplist, and these bytes begin with 78",
+                    "binary property list version 99 is not read; only 00 is",
+                    "2 bytes are needed at byte 1, and the buffer does not hold them",
+                    "the trailer does not describe the buffer: w",
+                    "offset table entry 3 points at byte 4, outside the objects",
+                    "object 6, referred to at byte 5, is not in the offset table",
+                    "the marker 8 at byte 7 is not an object this package reads",
+                    "an integer of 3 bytes at byte 9 is not a width the format has",
+                    "the string at byte 10 is not in the encoding its marker declares",
+                    "object 0, referred to at byte 11, contains itself",
+                    "the value at byte 12 is nested 65 deep, past the limit",
+                    "the root at byte 13 is not a plist element with one value: x",
+                    "the element y at byte 14 is not allowed there",
+                    "the dict at byte 15 does not alternate key and value: z",
+                    "the real at byte 16 holds 'q', which is not its shape",
+                    "the data at byte 17 is not base64",
+                    "the text is not well-formed XML at byte 18: bad",
+                    "a uid has no spelling in the XML property list form",
+                    "wanted a a and found a b",
+                    "the dictionary has no key k",
+                    "the buffer is 20 bytes, and the limit is 10"])

@@ -1,0 +1,179 @@
+// plistbin_tests.nv — the binary form's refusals and corners, on files
+// built byte by byte.
+
+use std.test
+use std.list
+use std.str
+use std.bytes
+use std.float
+use plisterror
+use plistvalue
+use plistbin
+
+// A binary property list from its objects, each in hexadecimal, with
+// the offset table and the trailer computed.  `root` is the root
+// object's index.
+fn bplist(objects: [Str], root: Int) -> Bytes
+    var body = "62706c6973743030"
+    var offsets = ""
+    var pos = 8
+    for o in objects
+        offsets = offsets + hex_byte(pos)
+        body = body + o
+        pos = pos + str.len(o) / 2
+    let trailer = "000000000000" + "01" + "01" + hex8(list.len(objects)) + hex8(root) + hex8(pos)
+    bytes.from_hex(body + offsets + trailer) ?? bytes.zeros(0)
+
+// A file with a trailer written by hand after one `false` object.
+fn with_trailer(t: Str) -> Bytes
+    bytes.from_hex("62706c697374303008" + "08" + t) ?? bytes.zeros(0)
+
+fn hex_byte(n: Int) -> Str
+    bytes.to_hex(bytes.u8(n))
+
+fn hex8(n: Int) -> Str
+    bytes.to_hex(bytes.u64_be(n))
+
+fn real_of(v: PlistValue) -> Float
+    match plistvalue.as_float(v)
+        Ok(f)  => f
+        Err(_) => 0.5
+
+fn code(r: Result<PlistValue, PlistFault>) -> Str
+    match r
+        Ok(v)  => "ok:" + plistvalue.kind_name(v)
+        Err(e) => plisterror.code_of(e)
+
+fn fault(r: Result<PlistValue, PlistFault>) -> Str
+    match r
+        Ok(v)  => "ok:" + plistvalue.kind_name(v)
+        Err(e) => e.message()
+
+@test
+fn test_the_header_is_checked_first() [io]
+    test.assert_eq(code(plistbin.read(bytes.from_str("bpl"))), "truncated")
+    test.assert_eq(fault(plistbin.read(bytes.from_str("bpl"))),
+                   "8 bytes are needed at byte 0, and the buffer does not hold them")
+    let bad = bytes.concat([bytes.from_str("xplist00"), bytes.zeros(34)])
+    match plistbin.read_index(bad)
+        Ok(_)  => test.fail("the magic is wrong")
+        Err(e) => test.assert_eq(e, PlistBadMagic("78706c6973743030"))
+    test.assert(not plistbin.is_binary(bytes.from_str("bplist")))
+
+@test
+fn test_every_trailer_number_is_checked() [io]
+    let cases = [("000000000000" + "03" + "01" + hex8(1) + hex8(0) + hex8(9), "the offset width is 3"),
+                 ("000000000000" + "01" + "00" + hex8(1) + hex8(0) + hex8(9), "the reference width is 0"),
+                 ("000000000000" + "01" + "01" + hex8(0) + hex8(0) + hex8(9), "the file holds no objects"),
+                 ("000000000000" + "01" + "01" + hex8(2) + hex8(0) + hex8(9),
+                  "the offset table at byte 9 does not fit before the trailer"),
+                 ("000000000000" + "01" + "01" + hex8(1) + hex8(0) + hex8(4),
+                  "the offset table at byte 4 does not fit before the trailer"),
+                 ("000000000000" + "01" + "01" + hex8(1) + hex8(1) + hex8(9), "the root is object 1 of 1")]
+    for c in cases
+        test.case(c.1)
+        match plistbin.read_index(with_trailer(c.0))
+            Ok(_)  => test.fail("that trailer does not describe the file")
+            Err(e) => test.assert_eq(e, PlistBadTrailer(c.1))
+    test.case("an offset outside the objects")
+    let bad_offset = bytes.from_hex("62706c697374303008" + "03" + "000000000000" + "01" + "01" + hex8(1)
+                                    + hex8(0) + hex8(9)) ?? bytes.zeros(0)
+    match plistbin.read_index(bad_offset)
+        Ok(_)  => test.fail("the offset points into the header")
+        Err(e) => test.assert_eq(e, PlistBadOffset(0, 3))
+
+@test
+fn test_the_limits_are_applied() [io]
+    let one = bplist(["09"], 0)
+    let small = PlistLimits { max_depth: 1, max_bytes: 41, max_objects: 1 }
+    test.assert_eq(code(plistbin.read_with(one, small)), "too-large")
+    let few = PlistLimits { max_depth: 1, max_bytes: 1000, max_objects: 0 }
+    test.assert_eq(fault(plistbin.read_with(one, few)),
+                   "the trailer does not describe the buffer: 1 objects is more than the limit of 0")
+    let nested = bplist(["a101", "a102", "09"], 0)
+    let shallow = PlistLimits { max_depth: 1, max_bytes: 1000, max_objects: 10 }
+    match plistbin.read_with(nested, shallow)
+        Ok(_)  => test.fail("that nests two deep")
+        Err(e) => test.assert_eq(e, PlistDepthExceeded(10, 2))
+    test.assert_eq(code(plistbin.read(nested)), "ok:array")
+
+@test
+fn test_references_and_cycles() [io]
+    test.case("a reference past the table")
+    match plistbin.read(bplist(["a105", "09"], 0))
+        Ok(_)  => test.fail("object 5 does not exist")
+        Err(e) => test.assert_eq(e, PlistBadReference(9, 5))
+    test.case("an array that holds itself")
+    match plistbin.read(bplist(["a100"], 0))
+        Ok(_)  => test.fail("that array contains itself")
+        Err(e) => test.assert_eq(e, PlistCycle(9, 0))
+    test.case("an object reached twice is not a cycle")
+    test.assert_eq(code(plistbin.read(bplist(["a20101", "09"], 0))), "ok:array")
+    test.case("marker_at and object_at name a missing object")
+    test.assert_eq(code(plistbin.object_at(bplist(["09"], 0), -1)), "bad-reference")
+    match plistbin.marker_at(bplist(["09"], 0), 4)
+        Ok(_)  => test.fail("there is one object")
+        Err(e) => test.assert_eq(e, PlistBadReference(10, 4))
+    match plistbin.marker_at(bytes.zeros(2), 0)
+        Ok(_)  => test.fail("that is not a file")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "truncated")
+
+@test
+fn test_a_set_and_a_dictionary() [io]
+    match plistbin.read(bplist(["c20102", "09", "08"], 0))
+        Ok(v)  => test.assert(v == PlistSet([PlistBool(true), PlistBool(false)]))
+        Err(e) => test.fail(e.message())
+    test.case("a dictionary key that is not a string")
+    match plistbin.read(bplist(["d10102", "1005", "09"], 0))
+        Ok(_)  => test.fail("a key is a string")
+        Err(e) => test.assert_eq(e, PlistBadDictShape(8, "key 0 is a integer"))
+    test.case("a set is written with its own marker")
+    match plistbin.write(PlistSet([PlistInteger(1)]))
+        Ok(b)  =>
+            test.assert_eq(bytes.to_hex(bytes.slice(b, 8, 12)), "c1011001")
+            test.assert(plistbin.read(b) == Ok(PlistSet([PlistInteger(1)])))
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_markers_the_reader_refuses() [io]
+    let cases = [("00", "unknown-marker"), ("0f", "unknown-marker"), ("70", "unknown-marker"),
+                 ("24", "unknown-marker"), ("30", "unknown-marker"), ("15", "bad-integer-width"),
+                 ("82000000", "bad-integer-width"), ("5f2041", "bad-integer-width"),
+                 ("5f1400000000000000000000000000000001", "bad-integer-width"),
+                 ("5580", "truncated"), ("51ff", "bad-string-encoding"), ("61d800", "bad-string-encoding"),
+                 ("62d8000041", "bad-string-encoding"), ("61dc00", "bad-string-encoding"),
+                 ("13ffff", "truncated")]
+    for c in cases
+        test.case(c.0)
+        test.assert_eq(code(plistbin.read(bplist([c.0], 0))), c.1)
+    test.assert_eq(fault(plistbin.read(bplist(["70"], 0))),
+                   "the marker 112 at byte 8 is not an object this package reads")
+
+@test
+fn test_a_32_bit_real_widens_exactly() [io]
+    let cases = [("223fc00000", 1.5), ("2200000001", 1.401298464324817e-45), ("22bf800000", -1.0),
+                 ("2200000000", 0.0), ("22007fffff", 1.1754942106924411e-38)]
+    for c in cases
+        test.case(c.0)
+        test.assert(plistbin.read(bplist([c.0], 0)) == Ok(PlistReal(c.1)))
+    match plistbin.read(bplist(["2280000000"], 0))
+        Ok(v)  => test.assert_eq(float.to_bits(real_of(v)), 0 - 9223372036854775807 - 1)
+        Err(e) => test.fail(e.message())
+    match plistbin.read(bplist(["227f800000"], 0))
+        Ok(v)  => test.assert(real_of(v) > 1.0e308)
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_the_writer_refuses_a_big_integer_of_the_wrong_width() [io]
+    match plistbin.write(PlistArray([PlistBigInteger(bytes.zeros(15))]))
+        Ok(_)  => test.fail("a big integer is sixteen bytes")
+        Err(e) => test.assert_eq(e, PlistBadIntegerWidth(0, 15))
+    match plistbin.validate(bytes.zeros(3))
+        Ok(_)  => test.fail("that is not a file")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "truncated")
+
+@test
+fn test_marker_names() [io]
+    let names = [0, 8, 9, 16, 34, 51, 64, 80, 96, 112, 128, 160, 192, 208, 240] |> list.map(plistbin.marker_kind_name)
+    test.assert_eq(names, ["null", "boolean", "boolean", "integer", "real", "date", "data", "ascii-string",
+                           "utf16-string", "unknown", "uid", "array", "set", "dictionary", "unknown"])
