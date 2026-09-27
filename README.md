@@ -9,12 +9,6 @@ described by Apple's
 and by the `CFBinaryPlist.c` source in CoreFoundation. This package
 reads and writes both in novo-lang.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is declared
-with its full signature, but every body is a `todo()` that panics when
-called. The package is published so its design can be reviewed and
-depended on before it is implemented. Version 0.1.0 will be the first
-working release.
-
 ## What a property list is
 
 A property list is one value. That value is a boolean, an integer, a
@@ -99,10 +93,7 @@ fn main() [io]
         Ok(ix) => println("${ix.object_count} object(s)")
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: plist-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
+Build and test with `novo pkg build` and `novo test tests/`.
 
 ## What the package contains
 
@@ -151,7 +142,9 @@ a set or a UID on the way to XML.
    encoded on writing, so no caller has to guess which strings were
    really buffers.
 5. **A set and a UID have no XML spelling.** Writing one as XML is
-   `PlistNoXmlSpelling`, naming the kind.
+   `PlistNoXmlSpelling`, naming the kind. So is a string holding a
+   control character other than tab, line feed and carriage return,
+   which XML 1.0 cannot write. A carriage return is written `&#13;`.
    `plistvalue.xml_blockers` gives the path of every value that blocks
    a conversion, so the message can name the place.
 6. **`plistvalue.as_cfuid_dict` is the deliberate loss.** Apple's own
@@ -173,21 +166,29 @@ a set or a UID on the way to XML.
     trailer are four separate refusals.
 11. **The writer stores equal objects once.** Two identical strings,
     integers, dates or buffers anywhere in the tree become one object
-    with two references, which is what Apple's writer does and what
-    makes the object count match `plutil -convert binary1`.
+    with two references, as Apple's writer and Python's plistlib store
+    them. Arrays and dictionaries are never shared.
     `plistbin.write_unshared` is the form that does not, for a test or
     a comparison that wants a predictable table.
-12. **The trailer's widths are the smallest that hold the file's
-    numbers**, which is also what Apple's writer chooses.
+12. **The writers produce Python's plistlib's bytes.** The objects are
+    in the order plistlib writes them, the trailer's widths are the
+    smallest that hold the file's numbers, and the XML layout is one
+    element per line with a tab per level. For a value written with
+    plistlib's `sort_keys=False`, both files are byte for byte the
+    same.
 13. **A `<dict>`'s children must alternate `<key>` and a value.** The
     document type cannot express that rule, so every reader checks it
     by hand and this one answers `PlistBadDictShape`.
 14. **Only `bplist00` is read.** A later binary version is a format
     with different table widths, and reading it as this one would read
     the wrong bytes.
-15. **A UTF-16 string in the binary form comes back as UTF-8**, and the
-    reader remembers which marker it had so a round trip picks the same
-    one.
+15. **A UTF-16 string in the binary form comes back as UTF-8.** The
+    writer uses the ASCII marker when every character is ASCII and
+    UTF-16 otherwise, as Apple's writer does.
+16. **The reader is bounded.** `plistbin.PlistLimits` sets the largest
+    buffer, the most objects and the deepest nesting it accepts; the
+    defaults are 64 MiB, a million objects and sixty-four levels. An
+    object reached by two paths is read once.
 
 ## What is not included
 
@@ -228,61 +229,33 @@ a set or a UID on the way to XML.
 ## Test vectors
 
 The normative sources are Apple's Property List Programming Guide for
-the value model and the XML document type, the
-`PropertyList-1.0.dtd` that every XML property list names, and
-CoreFoundation's `CFBinaryPlist.c` for the markers, the tables and the
-trailer.
+the value model and the XML document type, the `PropertyList-1.0.dtd`
+that every XML property list names, and CoreFoundation's
+`CFBinaryPlist.c` for the markers, the tables and the trailer.
 
-The oracle is **`plutil`**, which converts between the two forms and
-validates either. A document is correct here when
-`plutil -convert binary1` on the XML produces the same object count and
-the same tables, and `plutil -convert xml1` on the binary produces the
-same text. The files that exercise the corners are the ones a macOS
-system already has: an application's `Info.plist`, a `launchd` job
-description, and an `NSKeyedArchiver` archive, which is the only place
-a UID appears in practice. The generated run over a corpus of those
-lands with the implementation.
+The oracle is Python's `plistlib`. `tools/differential.py` draws
+seeded values of every kind plistlib writes, has plistlib write each in
+both forms, and writes `tests/differential_tests.nv`. The suite asserts
+that this package reads both files to the same value, writes the value
+back to the same XML text and the same binary bytes, and converts each
+file into the other.
 
 ```bash
-novo test tests/plist_tests.nv    # the two forms, the tables, the values
+novo test tests/differential_tests.nv   #  4 tests: 40 seeded values and 8 with UIDs
+novo test tests/plist_tests.nv          # 25 tests: the two forms, the tables, the values
+novo test tests/plistbin_tests.nv       #  9 tests: the binary form's refusals and corners
+novo test tests/plistxml_tests.nv       #  8 tests: the XML form's refusals, integers and dates
+novo test tests/plistvalue_tests.nv     #  4 tests: the accessors and every fault
+bash tests/coverage.sh                  # line coverage over src/
 ```
 
-The suite asserts that the form is decided by the first bytes, that the
-trailer's numbers are checked against the buffer, that the offset table
-is readable with no value built, that equal objects are stored once and
-the object count says so, that a `<dict>` whose children do not
-alternate is refused, that a UID and a set are refused by name when
-written as XML and that this is not a file fault, that a date is
-seconds from the 2001 instant, and that an integer too wide for
-sixty-four bits is its own kind rather than a truncation.
-
-The tests compile today and fail at run, each on the
-`not implemented: plist-nv.<module>.<fn>` panic that is its body. That
-is the expected state of an interface release. They turn green one at a
-time as bodies land.
-
-## Implementation status
-
-| Item | Implemented |
-| --- | --- |
-| `plistvalue.PlistValue`, `.PlistEntry`, `plistbin.PlistBinIndex` and the other types | the types are declared |
-| `plisterror.offset_of`, `.code_of`, `.is_file_fault`, `PlistFault.message` | no |
-| `plistvalue.kind_name`, `.has_xml_spelling`, `.xml_blockers`, `.as_cfuid_dict` | no |
-| `plistvalue.as_bool`, `.as_int`, `.as_float`, `.as_str`, `.as_data`, `.as_date_seconds`, `.as_array`, `.as_dict` | no |
-| `plistvalue.entry`, `.dict`, `.dict_of`, `.append`, `.len`, `.get`, `.lookup`, `.count_of`, `.replace`, `.remove`, `.path` | no |
-| `plistvalue.reference_epoch`, `.unix_seconds`, `.reference_seconds` | no |
-| `plistbin.default_limits`, `.is_binary`, `.read_index`, `.read`, `.read_with` | no |
-| `plistbin.object_at`, `.marker_at`, `.marker_kind_name`, `.validate` | no |
-| `plistbin.write`, `.write_unshared`, `.object_count` | no |
-| `plistxml.is_xml`, `.read`, `.from_document`, `.value_at` | no |
-| `plistxml.write`, `.write_fragment`, `.doctype`, `.element_names` | no |
-| `plistxml.date_text`, `.date_seconds` | no |
-| `plistfmt.format_name`, `.detect`, `.read`, `.write`, `.convert`, `.can_write` | no |
-
-The XML half cannot be implemented before xml-nv's is: `^0.0.2` pins
-exactly 0.0.2, which is itself an interface release whose bodies are
-`todo()`. The binary half depends on nothing and can be implemented
-first.
+The suites also assert that the form is decided by the first bytes,
+that every number in the trailer is checked against the buffer, that a
+cycle and a reference outside the table are refused, that a `<dict>`
+whose children do not alternate is refused, that a UID and a set are
+refused by name when written as XML and that this is not a file fault,
+and that an integer too wide for sixty-four bits is its own kind in
+both forms.
 
 ## Licence
 

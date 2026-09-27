@@ -5,6 +5,55 @@ All notable changes to plist-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.0 — 2026-09-27
+
+The first implementation of the interface published as 0.0.1: both
+forms read and written, with the bytes Python's plistlib writes.
+
+### Changed
+
+These change the interface's declarations, so a program written against
+0.0.x may need the edits named here.
+
+- `PlistFault` has a `PlistTooLarge(size, most)` variant, which
+  `plistbin.read_with` answers for a buffer past `PlistLimits.max_bytes`.
+- `PlistLimits` is a `@value` struct.  A changed limit is a new literal.
+- `plistvalue.as_cfuid_dict` converts every UID in a tree, at any
+  depth, and answers any other value unchanged.
+- `plistbin.validate` reads the values as `read` does; it no longer
+  claims to build none.
+- The dependency is xml-nv `^0.1.0`, and the toolchain floor is 0.13.0.
+
+### Behaviour the interface left open
+
+- The binary writer orders objects as plistlib does, a dictionary's
+  keys before its values, stores equal scalars once (UIDs included),
+  and never shares an array or a dictionary.  The XML writer uses
+  plistlib's layout, including the width of a `<data>` element's base64
+  lines at each depth and Python's spelling of a real.  For a value
+  plistlib writes with `sort_keys=False`, both files are byte for byte
+  plistlib's.
+- A string holding a control character other than tab, line feed and
+  carriage return is `PlistNoXmlSpelling("control character")` in the
+  XML form.  A carriage return is written `&#13;`.
+- The binary reader refuses the null object `0x00` and the fill byte
+  `0x0F` as `PlistUnknownMarker`, and a dictionary key that is not a
+  string as `PlistBadDictShape`.  An object reached by two paths is read
+  once.
+- The XML reader accepts a `plist` element with no `version`, a
+  hexadecimal `integer` after `0x`, a `date` whose later parts are left
+  off or that carries a `+hh:mm` offset, and comments and white space
+  between elements.  It refuses other text between elements as
+  `PlistBadText`.
+- An XML `integer` outside the range of `Int` that fits sixteen bytes
+  is a `PlistBigInteger`, as the binary form's sixteen-byte integer is.
+- `plistxml.date_text` rounds a fractional second towards the earlier
+  second.
+- `plistbin.marker_kind_name` answers `"unknown"` for a kind the format
+  does not assign.
+- The API test that converted the one-object file to XML expected
+  `<true/>`; that file holds `false`, and the test now says so.
+
 ## [0.0.1]
 
 **The interface, published before anyone implements it.** Every public
