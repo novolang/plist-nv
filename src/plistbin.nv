@@ -1,12 +1,9 @@
 // plistbin — the binary form, with its tables in the open.
 //
-// Every body is a `todo()`.  The signatures are the design, and the
-// compiler checks them as claims; see the README for the stamp.
-//
-// WHAT A BINARY PROPERTY LIST IS.  Eight bytes of magic — `bplist00` —
-// then the OBJECTS, then the OFFSET TABLE, then a thirty-two-byte
-// TRAILER.  The trailer is read first, because everything else is
-// reached through it:
+// A binary property list is eight bytes of magic, `bplist00`, then the
+// objects, then the offset table, then a thirty-two-byte trailer.  The
+// trailer is read first, because everything else is reached through
+// it:
 //
 //   bytes 0..5    unused
 //   byte  6       the width, in bytes, of one entry in the offset table
@@ -16,26 +13,31 @@
 //   bytes 24..31  where the offset table starts
 //
 // The offset table is that many entries of that width, each the byte
-// offset of one object.  An object is a marker byte — four bits of kind
-// and four of length or width — and its payload.  A collection's
-// payload is not its elements: it is their INDEXES into the offset
-// table, each of the reference width.  So the same string written into
-// ten dictionaries is stored once, and the file is a graph rather than
-// a tree.
+// offset of one object.  An object is a marker byte, four bits of kind
+// and four of length or width, and its payload.  A collection's payload
+// is the indexes of its elements in the offset table, each of the
+// reference width.  The same string in ten dictionaries is stored once,
+// and the file is a graph rather than a tree.
 //
-// THE TABLES ARE EXPOSED, AND THAT IS THIS MODULE'S DECISION.  A reader
-// that only handed back a value would make three questions
-// unanswerable: is this file's offset table sound, how many distinct
-// objects does it hold, and does a file this package wrote have the
-// same object count as the one Apple's `plutil` writes.  All three are
-// what somebody debugging a property list actually asks.  So
 // `read_index` answers the trailer and the offset table without
-// building any value, and `read` is `read_index` plus the walk.
+// building a value, so a caller can check a file's tables and count its
+// objects.  `read` is `read_index` followed by a walk from the root.
 //
-// A GRAPH CAN HAVE A CYCLE, and nothing in the format forbids one.  An
-// array whose element refers back to it is a file a reader that
-// followed references would never return from, so the reader tracks the
-// objects on its path and answers `PlistCycle`.
+// Nothing in the format forbids a cycle, such as an array whose element
+// refers back to it.  The reader keeps the objects on its current path
+// and answers `PlistCycle` when a reference returns to one.  An object
+// reached twice by different paths is read once.
+//
+// The writer follows Python's plistlib, which follows Apple's writer:
+// objects in depth-first order from the root, a dictionary's keys
+// before its values, equal scalars stored once, and the smallest widths
+// that hold the file's numbers.
+
+use std.bytes
+use std.list
+use std.str
+use std.float
+use plistvalue
 
 // The trailer and the offset table, without any value built.
 pub struct PlistBinIndex
@@ -54,7 +56,11 @@ pub struct PlistBinIndex
     offsets: [Int]
 
 // What a reader is configured with.
-pub struct PlistLimits
+//
+// A value type: limits are built whole, and a changed limit is a new
+// literal.
+pub @value
+struct PlistLimits
     // How deep a collection may nest.
     max_depth: Int
     // The largest buffer the reader will accept, in bytes.  A trailer
@@ -74,7 +80,7 @@ pub struct PlistLimits
 //     println("${plistbin.default_limits().max_depth}")   // 64
 // ```
 pub fn default_limits() -> PlistLimits []
-    todo("plist-nv.plistbin.default_limits")
+    PlistLimits { max_depth: 64, max_bytes: 67108864, max_objects: 1000000 }
 
 // Whether the buffer begins with `bplist00`.
 //
@@ -89,15 +95,15 @@ pub fn default_limits() -> PlistLimits []
 //     println("${plistbin.is_binary(bytes.from_str("bplist00"))}")   // true
 // ```
 pub fn is_binary(src: Bytes) -> Bool []
-    todo("plist-nv.plistbin.is_binary")
+    bytes.len(src) >= 8 and bytes.to_str(bytes.slice(src, 0, 8)) == "bplist00"
 
 // The trailer and the offset table, with no value built.
 //
-// EVERY NUMBER CHECKED against the buffer: an offset table that starts
-// past the end, an object count the table cannot hold, a root outside
-// the table and an offset inside the trailer are all named refusals.  A
-// reader that trusted the trailer would be a reader that indexes
-// wherever the trailer says.
+// Every number is checked against the buffer: an offset table that
+// does not fit before the trailer, an object count the table cannot
+// hold, a root outside the table and an offset outside the objects are
+// each refused by name.  The trailer comes from the file, so a reader
+// that trusted it would index wherever it said.
 //
 // ```novo
 // use std.bytes
@@ -109,7 +115,7 @@ pub fn is_binary(src: Bytes) -> Bool []
 //         Err(e) => println(e.message())
 // ```
 pub fn read_index(src: Bytes) -> Result<PlistBinIndex, PlistFault> []
-    todo("plist-nv.plistbin.read_index")
+    index_with(src, default_limits())
 
 // The root value of a binary property list.
 //
@@ -123,18 +129,21 @@ pub fn read_index(src: Bytes) -> Result<PlistBinIndex, PlistFault> []
 //         Err(e) => println(e.message())
 // ```
 pub fn read(src: Bytes) -> Result<PlistValue, PlistFault> []
-    todo("plist-nv.plistbin.read")
+    read_with(src, default_limits())
 
 // The same, under limits the caller chose.
 pub fn read_with(src: Bytes, limits: PlistLimits) -> Result<PlistValue, PlistFault> []
-    todo("plist-nv.plistbin.read_with")
+    if let Some(f) = header_fault(src)
+        return Err(f)
+    let ix = index_with(src, limits)!
+    walk_from(src, ix, limits, ix.root)
 
 // One object out of the table, by its index, with its own references
 // followed.
 //
-// What a tool showing a file's object graph uses, and what a caller
-// reading an NSKeyedArchiver archive follows a `PlistUid` with — a UID
-// is an index into exactly this table.
+// A UID is an index into this table, so this is how an NSKeyedArchiver
+// archive's `PlistUid` is followed.  An index outside the table is
+// `PlistBadReference`.
 //
 // ```novo
 // use std.bytes
@@ -146,21 +155,27 @@ pub fn read_with(src: Bytes, limits: PlistLimits) -> Result<PlistValue, PlistFau
 //         Err(e) => println(e.message())
 // ```
 pub fn object_at(src: Bytes, index: Int) -> Result<PlistValue, PlistFault> []
-    todo("plist-nv.plistbin.object_at")
+    let ix = read_index(src)!
+    if index < 0 or index >= ix.object_count
+        return Err(PlistBadReference(bytes.len(src) - 32, index))
+    walk_from(src, ix, default_limits(), index)
 
 // The marker byte of the object at an index, without reading its
 // payload.
 //
 // The four high bits are the kind and the four low bits are a length or
-// a width; `marker_kind_name` spells the high half.  What a file
-// inspector prints beside each row of the offset table.
+// a width; `marker_kind_name` names the kind.
 pub fn marker_at(src: Bytes, index: Int) -> Result<Int, PlistFault> []
-    todo("plist-nv.plistbin.marker_at")
+    let ix = read_index(src)!
+    if index < 0 or index >= ix.object_count
+        return Err(PlistBadReference(bytes.len(src) - 32, index))
+    Ok(byte(src, ix.offsets[index]))
 
 // The name of the kind a marker's high four bits denote: `"null"`,
 // `"boolean"`, `"integer"`, `"real"`, `"date"`, `"data"`,
 // `"ascii-string"`, `"utf16-string"`, `"uid"`, `"array"`, `"set"`,
-// `"dictionary"`.
+// `"dictionary"`, or `"unknown"` for the kinds the format does not
+// assign.
 //
 // ```novo
 // use plistbin
@@ -169,29 +184,34 @@ pub fn marker_at(src: Bytes, index: Int) -> Result<Int, PlistFault> []
 //     println(plistbin.marker_kind_name(160))   // array
 // ```
 pub fn marker_kind_name(marker: Int) -> Str []
-    todo("plist-nv.plistbin.marker_kind_name")
+    let hi = (marker >> 4) & 15
+    if hi == 0 and (marker == 8 or marker == 9)
+        return "boolean"
+    let names = ["null", "integer", "real", "date", "data", "ascii-string", "utf16-string", "unknown",
+                 "uid", "unknown", "array", "unknown", "set", "dictionary", "unknown", "unknown"]
+    names[hi]
 
-// Whether the buffer is a sound binary property list, with no value
-// built.
+// `Ok(true)` when the buffer is a sound binary property list, and the
+// first fault otherwise.
 //
-// The whole walk — every marker, every reference, every offset, the
-// cycle check — and no allocation for the values.  What a validator
-// runs over a directory of files.
+// The whole walk: every marker, every reference, every offset, and the
+// cycle check.
 pub fn validate(src: Bytes) -> Result<Bool, PlistFault> []
-    todo("plist-nv.plistbin.validate")
+    read(src)!
+    Ok(true)
 
 // The bytes of a binary property list holding this value.
 //
-// EQUAL OBJECTS ARE STORED ONCE.  Two identical strings, integers,
-// dates or data buffers anywhere in the tree become one object with two
-// references, which is what Apple's own writer does and what makes the
-// object count of a file this package writes match the object count of
-// the same document written by `plutil -convert binary1`.  A writer
-// that did not deduplicate would produce a larger file that every tool
-// still reads, and a round trip whose object count changed.
+// Equal scalars are stored once: two identical strings, integers,
+// reals, dates, data buffers or UIDs anywhere in the tree become one
+// object with two references.  Arrays and dictionaries are never
+// shared.  The objects are in the order Python's plistlib writes them,
+// and the widths in the trailer are the smallest that hold the file's
+// numbers, so the bytes equal plistlib's for the same value written
+// with `sort_keys=False`.
 //
-// The widths in the trailer are the smallest that hold the file's own
-// numbers, which is also what Apple's writer chooses.
+// A `PlistBigInteger` whose bytes are not sixteen is
+// `PlistBadIntegerWidth`.
 //
 // ```novo
 // use std.bytes
@@ -204,21 +224,19 @@ pub fn validate(src: Bytes) -> Result<Bool, PlistFault> []
 //         Err(e) => println(e.message())
 // ```
 pub fn write(v: PlistValue) -> Result<Bytes, PlistFault> []
-    todo("plist-nv.plistbin.write")
+    write_graph(v, true)
 
-// The bytes, with equal objects NOT shared.
+// The bytes, with every value its own object.
 //
-// Every value becomes its own object.  Slower to read and larger on
-// disk, and the one way to write a file whose object graph is a tree —
-// which a tool comparing two files object by object, and a test that
-// wants a predictable table, both want.
+// The file is larger and its object graph is a tree, which suits a
+// tool that compares two files object by object.
 pub fn write_unshared(v: PlistValue) -> Result<Bytes, PlistFault> []
-    todo("plist-nv.plistbin.write_unshared")
+    write_graph(v, false)
 
 // How many distinct objects the value will be written as.
 //
-// The number `read_index` answers for the file this would produce, and
-// the one a caller compares against `plutil`'s output.
+// The `object_count` that `read_index` answers for the file `write`
+// produces.
 //
 // ```novo
 // use plistvalue
@@ -230,4 +248,471 @@ pub fn write_unshared(v: PlistValue) -> Result<Bytes, PlistFault> []
 //         Err(e) => println(e.message())
 // ```
 pub fn object_count(v: PlistValue) -> Result<Int, PlistFault> []
-    todo("plist-nv.plistbin.object_count")
+    var objs: [PlistValue] = []
+    var kids: [[Int]] = []
+    let seen = HashMap.new()
+    flatten(v, true, objs, kids, seen)
+    Ok(list.len(objs))
+
+// The fault in a buffer's first eight bytes, or `None` when they are
+// `bplist00`.
+fn header_fault(src: Bytes) -> ?PlistFault
+    if bytes.len(src) < 8
+        return Some(PlistTruncated(0, 8))
+    if bytes.to_str(bytes.slice(src, 0, 6)) != "bplist"
+        return Some(PlistBadMagic(bytes.to_hex(bytes.slice(src, 0, 8))))
+    let version = bytes.to_str(bytes.slice(src, 6, 8))
+    if version != "00"
+        return Some(PlistUnsupportedBinaryVersion(version))
+    None
+
+// The trailer and the offset table, checked against the buffer and the
+// limits.
+fn index_with(src: Bytes, limits: PlistLimits) -> Result<PlistBinIndex, PlistFault>
+    let n = bytes.len(src)
+    if n > limits.max_bytes
+        return Err(PlistTooLarge(n, limits.max_bytes))
+    if n < 40
+        return Err(PlistTruncated(0, 40))
+    if let Some(f) = header_fault(src)
+        return Err(f)
+    let t = n - 32
+    let ow = byte(src, t + 6)
+    let rw = byte(src, t + 7)
+    let count = uint(src, t + 8, 8)
+    let root = uint(src, t + 16, 8)
+    let start = uint(src, t + 24, 8)
+    if not is_width(ow)
+        return Err(PlistBadTrailer("the offset width is ${ow}"))
+    if not is_width(rw)
+        return Err(PlistBadTrailer("the reference width is ${rw}"))
+    if count < 1
+        return Err(PlistBadTrailer("the file holds no objects"))
+    if count > limits.max_objects
+        return Err(PlistBadTrailer("${count} objects is more than the limit of ${limits.max_objects}"))
+    if start < 8 or start > t or count > (t - start) / ow
+        return Err(PlistBadTrailer("the offset table at byte ${start} does not fit before the trailer"))
+    if root < 0 or root >= count
+        return Err(PlistBadTrailer("the root is object ${root} of ${count}"))
+    var offsets: [Int] = []
+    for i in 0..count
+        let off = uint(src, start + i * ow, ow)
+        if off < 8 or off >= start
+            return Err(PlistBadOffset(i, off))
+        list.push(offsets, off)
+    Ok(PlistBinIndex { offset_width: ow,
+        ref_width: rw,
+        object_count: count,
+        root: root,
+        table_start: start,
+        offsets: offsets })
+
+// The value of object `ref`, read with a fresh walk.
+fn walk_from(src: Bytes, ix: PlistBinIndex, limits: PlistLimits,
+             ref: Int) -> Result<PlistValue, PlistFault>
+    var done: [?PlistValue] = []
+    for _ in 0..ix.object_count
+        list.push(done, None)
+    walk(src, ix, limits, ref, [], done)
+
+// The value of object `ref`, which is not on `path`.  `done` holds
+// every object already read, so an object reached twice is read once.
+fn walk(src: Bytes, ix: PlistBinIndex, limits: PlistLimits, ref: Int, path: [Int],
+        var done: [?PlistValue]) -> Result<PlistValue, PlistFault>
+    if let Some(v) = done[ref]
+        return Ok(v)
+    let at = ix.offsets[ref]
+    let hi = byte(src, at) >> 4
+    var v = PlistBool(false)
+    if hi == 10 or hi == 12 or hi == 13
+        v = collection(src, ix, limits, ref, path, done)!
+    else
+        v = scalar(src, ix, at)!
+    done[ref] = Some(v)
+    Ok(v)
+
+// An array, a set or a dictionary: object `ref`, with its elements.
+fn collection(src: Bytes, ix: PlistBinIndex, limits: PlistLimits, ref: Int, path: [Int],
+              var done: [?PlistValue]) -> Result<PlistValue, PlistFault>
+    let at = ix.offsets[ref]
+    let hi = byte(src, at) >> 4
+    let (n, body) = length(src, ix, at)!
+    var per = 1
+    if hi == 13
+        per = 2
+    need(ix, body, n)!
+    need(ix, body, n * per * ix.ref_width)!
+    if list.len(path) >= limits.max_depth
+        return Err(PlistDepthExceeded(at, list.len(path) + 1))
+    let inner = list.concat(path, [ref])
+    var items: [PlistValue] = []
+    for i in 0..n * per
+        let where = body + i * ix.ref_width
+        let child = uint(src, where, ix.ref_width)
+        if child < 0 or child >= ix.object_count
+            return Err(PlistBadReference(where, child))
+        if list.contains(inner, child)
+            return Err(PlistCycle(where, child))
+        list.push(items, walk(src, ix, limits, child, inner, done)!)
+    if hi == 10
+        return Ok(PlistArray(items))
+    if hi == 12
+        return Ok(PlistSet(items))
+    dictionary(at, items, n)
+
+// A dictionary from its `n` keys followed by its `n` values.
+fn dictionary(at: Int, items: [PlistValue], n: Int) -> Result<PlistValue, PlistFault>
+    var entries: [PlistEntry] = []
+    for i in 0..n
+        match items[i]
+            PlistString(k) => list.push(entries, plistvalue.entry(k, items[n + i]))
+            other          =>
+                return Err(PlistBadDictShape(at, "key ${i} is a ${plistvalue.kind_name(other)}"))
+    Ok(PlistDict(entries))
+
+// A value that holds no references, at byte `at`.
+fn scalar(src: Bytes, ix: PlistBinIndex, at: Int) -> Result<PlistValue, PlistFault>
+    let m = byte(src, at)
+    let hi = m >> 4
+    let lo = m & 15
+    if m == 8 or m == 9
+        return Ok(PlistBool(m == 9))
+    if hi == 1
+        return integer(src, ix, at, lo)
+    if m == 34 or m == 35 or m == 51
+        return real_or_date(src, ix, at, m)
+    if hi == 4 or hi == 5 or hi == 6
+        return sized(src, ix, at, hi)
+    if hi == 8
+        return uid(src, ix, at, lo + 1)
+    Err(PlistUnknownMarker(at, m))
+
+// An integer of width `1 << lo` at byte `at`.
+fn integer(src: Bytes, ix: PlistBinIndex, at: Int, lo: Int) -> Result<PlistValue, PlistFault>
+    let width = 1 << lo
+    if lo > 4
+        return Err(PlistBadIntegerWidth(at, width))
+    need(ix, at + 1, width)!
+    if lo == 4
+        return Ok(PlistBigInteger(bytes.slice(src, at + 1, at + 17)))
+    Ok(PlistInteger(uint(src, at + 1, width)))
+
+// A 32- or 64-bit real, or a date, at byte `at`.
+fn real_or_date(src: Bytes, ix: PlistBinIndex, at: Int, m: Int) -> Result<PlistValue, PlistFault>
+    if m == 34
+        need(ix, at + 1, 4)!
+        return Ok(PlistReal(f32_value(uint(src, at + 1, 4))))
+    need(ix, at + 1, 8)!
+    let f = float.from_bits(uint(src, at + 1, 8))
+    if m == 51
+        return Ok(PlistDate(f))
+    Ok(PlistReal(f))
+
+// Data, an ASCII string or a UTF-16 string at byte `at`.
+fn sized(src: Bytes, ix: PlistBinIndex, at: Int, hi: Int) -> Result<PlistValue, PlistFault>
+    let (n, body) = length(src, ix, at)!
+    need(ix, body, n)!
+    if hi == 6
+        need(ix, body, 2 * n)!
+        return Ok(PlistString(utf16_text(src, at, body, n)!))
+    let raw = bytes.slice(src, body, body + n)
+    if hi == 4
+        return Ok(PlistData(raw))
+    for i in 0..n
+        if byte(raw, i) > 127
+            return Err(PlistBadStringEncoding(at))
+    Ok(PlistString(bytes.to_str(raw)))
+
+// A UID of `width` bytes at byte `at`.
+fn uid(src: Bytes, ix: PlistBinIndex, at: Int, width: Int) -> Result<PlistValue, PlistFault>
+    if not is_width(width)
+        return Err(PlistBadIntegerWidth(at, width))
+    need(ix, at + 1, width)!
+    Ok(PlistUid(uint(src, at + 1, width)))
+
+// The length of the sized object at byte `at`, and where its payload
+// starts.  A length of 15 or more follows the marker as an integer
+// object.
+fn length(src: Bytes, ix: PlistBinIndex, at: Int) -> Result<(Int, Int), PlistFault>
+    let lo = byte(src, at) & 15
+    if lo != 15
+        return Ok((lo, at + 1))
+    need(ix, at + 1, 1)!
+    let m = byte(src, at + 1)
+    let width = 1 << (m & 15)
+    if (m >> 4) != 1 or width > 8
+        return Err(PlistBadIntegerWidth(at + 1, width))
+    need(ix, at + 2, width)!
+    Ok((uint(src, at + 2, width), at + 2 + width))
+
+// `at`, when `n` bytes from `at` lie before the offset table.
+fn need(ix: PlistBinIndex, at: Int, n: Int) -> Result<Int, PlistFault>
+    if n < 0 or n > ix.table_start - at
+        return Err(PlistTruncated(at, n))
+    Ok(at)
+
+// The text of `n` UTF-16 big-endian code units at `body`.
+fn utf16_text(src: Bytes, at: Int, body: Int, n: Int) -> Result<Str, PlistFault>
+    var parts: [Str] = []
+    var high = -1
+    for i in 0..n
+        let u = uint(src, body + 2 * i, 2)
+        let low = u >= 56320 and u <= 57343
+        if high >= 0
+            if not low
+                return Err(PlistBadStringEncoding(at))
+            list.push(parts, str.from_char(65536 + ((high - 55296) << 10) + (u - 56320)))
+            high = -1
+        else if u >= 55296 and u <= 56319
+            high = u
+        else if low
+            return Err(PlistBadStringEncoding(at))
+        else
+            list.push(parts, str.from_char(u))
+    if high >= 0
+        return Err(PlistBadStringEncoding(at))
+    Ok(str.join(parts, ""))
+
+// A 32-bit IEEE 754 value's bits as the `Float` it denotes.
+fn f32_value(bits: Int) -> Float
+    let sign = (bits >> 31) & 1
+    var e = (bits >> 23) & 255
+    var m = bits & 8388607
+    if e == 255
+        return float.from_bits((sign << 63) | (2047 << 52) | (m << 29))
+    if e == 0
+        if m == 0
+            return float.from_bits(sign << 63)
+        e = 1
+        while (m & 8388608) == 0
+            m = m << 1
+            e = e - 1
+        m = m & 8388607
+    float.from_bits((sign << 63) | ((e + 896) << 52) | (m << 29))
+
+// The byte at `i`, or 0 past the end.
+fn byte(src: Bytes, i: Int) -> Int
+    bytes.__byte_at_or(src, i, 0)
+
+// The big-endian unsigned number of `w` bytes at `at`.  Eight bytes
+// with the top bit set read as a negative `Int`.
+fn uint(src: Bytes, at: Int, w: Int) -> Int
+    var n = 0
+    for i in 0..w
+        n = (n << 8) | byte(src, at + i)
+    n
+
+// Whether `w` is a width the trailer may name.
+fn is_width(w: Int) -> Bool
+    w == 1 or w == 2 or w == 4 or w == 8
+
+// The bytes of a binary property list for `v`, with equal scalars
+// stored once when `shared` is set.
+fn write_graph(v: PlistValue, shared: Bool) -> Result<Bytes, PlistFault>
+    var objs: [PlistValue] = []
+    var kids: [[Int]] = []
+    let seen = HashMap.new()
+    flatten(v, shared, objs, kids, seen)
+    for o in objs
+        if let Some(f) = encode_fault(o)
+            return Err(f)
+    let count = list.len(objs)
+    let rw = size_for(count)
+    var parts: [Bytes] = [bytes.from_str("bplist00")]
+    var offsets: [Int] = []
+    var pos = 8
+    for i in 0..count
+        var piece = encode(objs[i], kids[i], rw)
+        list.push(offsets, pos)
+        list.push(parts, piece)
+        pos = pos + bytes.len(piece)
+    let ow = size_for(pos)
+    for off in offsets
+        list.push(parts, uint_bytes(off, ow))
+    list.push(parts, bytes.concat([bytes.zeros(6), bytes.u8(ow), bytes.u8(rw),
+        bytes.u64_be(count), bytes.u64_be(0), bytes.u64_be(pos)]))
+    Ok(bytes.concat(parts))
+
+// Add `v` and everything under it to `objs` in depth-first order, a
+// dictionary's keys before its values, and answer its index.  With
+// `shared` set, a scalar equal to one already added answers that one's
+// index.  `kids` holds each object's element indexes.
+fn flatten(v: PlistValue, shared: Bool, var objs: [PlistValue], var kids: [[Int]],
+           seen: HashMap) -> Int
+    let key = scalar_key(v)
+    if shared and key != ""
+        let known = seen.get_or(key, -1)
+        if known >= 0
+            return known
+        seen.set(key, list.len(objs))
+    let r = list.len(objs)
+    list.push(objs, v)
+    list.push(kids, [])
+    var refs: [Int] = []
+    for c in elements_of(v)
+        list.push(refs, flatten(c, shared, objs, kids, seen))
+    kids[r] = refs
+    r
+
+// The values a collection refers to, a dictionary's keys first.
+fn elements_of(v: PlistValue) -> [PlistValue]
+    match v
+        PlistArray(xs) => xs[:]
+        PlistSet(xs)   => xs[:]
+        PlistDict(es)  => list.concat(list.map(es, key_of), list.map(es, value_of))
+        _              => []
+
+fn key_of(e: PlistEntry) -> PlistValue
+    PlistString(e.key)
+
+fn value_of(e: PlistEntry) -> PlistValue
+    e.value
+
+// A text that two scalars share exactly when the writer stores them as
+// one object, or `""` for a collection.
+fn scalar_key(v: PlistValue) -> Str
+    match v
+        PlistBool(b)       => "b${b}"
+        PlistInteger(n)    => "i${n}"
+        PlistBigInteger(b) => "I${bytes.to_hex(b)}"
+        PlistReal(f)       => "r${float.to_bits(f)}"
+        PlistString(t)     => "s${t}"
+        PlistDate(t)       => "d${float.to_bits(t)}"
+        PlistData(b)       => "x${bytes.to_hex(b)}"
+        PlistUid(n)        => "u${n}"
+        _                  => ""
+
+// The fault that keeps a value from being written, or `None`.  Only a
+// `PlistBigInteger` whose bytes are not sixteen has one.
+fn encode_fault(v: PlistValue) -> ?PlistFault
+    if let PlistBigInteger(b) = v
+        if bytes.len(b) != 16
+            return Some(PlistBadIntegerWidth(0, bytes.len(b)))
+    None
+
+// One object's bytes, its element references `refs` wide `rw` bytes.
+fn encode(v: PlistValue, refs: [Int], rw: Int) -> Bytes
+    match v
+        PlistBool(b)       =>
+            if b
+                return bytes.u8(9)
+            bytes.u8(8)
+        PlistInteger(n)    => int_object(n)
+        PlistBigInteger(b) => bytes.concat([bytes.u8(20), b])
+        PlistReal(f)       => bytes.concat([bytes.u8(35), bytes.u64_be(float.to_bits(f))])
+        PlistDate(t)       => bytes.concat([bytes.u8(51), bytes.u64_be(float.to_bits(t))])
+        PlistData(b)       => bytes.concat([size_marker(64, bytes.len(b)), b])
+        PlistString(t)     => string_object(t)
+        PlistUid(n)        => uid_object(n)
+        PlistArray(xs)     => bytes.concat([size_marker(160, list.len(xs)), refs_bytes(refs, rw)])
+        PlistSet(xs)       => bytes.concat([size_marker(192, list.len(xs)), refs_bytes(refs, rw)])
+        PlistDict(es)      => bytes.concat([size_marker(208, list.len(es)), refs_bytes(refs, rw)])
+
+// An integer object in the narrowest width that holds `n`; a negative
+// one takes eight bytes.
+fn int_object(n: Int) -> Bytes
+    if n < 0
+        return bytes.concat([bytes.u8(19), bytes.u64_be(n)])
+    let w = size_for(n)
+    bytes.concat([bytes.u8(16 + width_code(w)), uint_bytes(n, w)])
+
+// A UID object in the narrowest width that holds `n`.
+fn uid_object(n: Int) -> Bytes
+    var w = 8
+    if n >= 0
+        w = size_for(n)
+    bytes.concat([bytes.u8(128 + w - 1), uint_bytes(n, w)])
+
+// A string object: ASCII when every byte is, UTF-16 big-endian
+// otherwise.
+fn string_object(t: Str) -> Bytes
+    if is_ascii(t)
+        return bytes.concat([size_marker(80, str.len(t)), bytes.from_str(t)])
+    let units = utf16_units(t)
+    var parts: [Bytes] = [size_marker(96, list.len(units))]
+    for u in units
+        list.push(parts, bytes.u16_be(u))
+    bytes.concat(parts)
+
+// A marker with its size in the low four bits, or with `0x0F` there and
+// the size following as an integer object.
+fn size_marker(token: Int, size: Int) -> Bytes
+    if size < 15
+        return bytes.u8(token + size)
+    bytes.concat([bytes.u8(token + 15), int_object(size)])
+
+// Each reference as `rw` bytes.
+fn refs_bytes(refs: [Int], rw: Int) -> Bytes
+    var parts: [Bytes] = []
+    for r in refs
+        list.push(parts, uint_bytes(r, rw))
+    bytes.concat(parts)
+
+// `n` as `w` big-endian bytes.
+fn uint_bytes(n: Int, w: Int) -> Bytes
+    if w == 1
+        return bytes.u8(n)
+    if w == 2
+        return bytes.u16_be(n)
+    if w == 4
+        return bytes.u32_be(n)
+    bytes.u64_be(n)
+
+// The smallest width, 1, 2, 4 or 8 bytes, whose values reach `n`: the
+// one Python's plistlib and Apple's writer choose for a count or an
+// offset of `n`.
+fn size_for(n: Int) -> Int
+    if n < 256
+        return 1
+    if n < 65536
+        return 2
+    if n < 4294967296
+        return 4
+    8
+
+// The low four bits of an integer marker for a width.
+fn width_code(w: Int) -> Int
+    if w == 1
+        return 0
+    if w == 2
+        return 1
+    if w == 4
+        return 2
+    3
+
+// Whether every byte of `t` is ASCII.
+fn is_ascii(t: Str) -> Bool
+    for i in 0..str.len(t)
+        if str.byte_at_or(t, i, 0) > 127
+            return false
+    true
+
+// The UTF-16 code units of a UTF-8 string.
+fn utf16_units(t: Str) -> [Int]
+    var out: [Int] = []
+    for i in 0..str.len(t)
+        let cp = code_point_at(t, i)
+        if cp >= 65536
+            list.push(out, 55296 + ((cp - 65536) >> 10))
+            list.push(out, 56320 + ((cp - 65536) & 1023))
+        else if cp >= 0
+            list.push(out, cp)
+    out
+
+// The code point whose UTF-8 encoding starts at byte `i`, or -1 for a
+// continuation byte.
+fn code_point_at(t: Str, i: Int) -> Int
+    let b = str.byte_at_or(t, i, 0)
+    if b < 128
+        return b
+    if b < 192
+        return -1
+    if b < 224
+        return ((b & 31) << 6) | cont(t, i + 1)
+    if b < 240
+        return ((b & 15) << 12) | (cont(t, i + 1) << 6) | cont(t, i + 2)
+    ((b & 7) << 18) | (cont(t, i + 1) << 12) | (cont(t, i + 2) << 6) | cont(t, i + 3)
+
+// The six payload bits of a UTF-8 continuation byte.
+fn cont(t: Str, i: Int) -> Int
+    str.byte_at_or(t, i, 0) & 63
