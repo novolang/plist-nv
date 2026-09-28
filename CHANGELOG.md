@@ -5,10 +5,14 @@ All notable changes to plist-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
-## 0.1.0 — 2026-09-27
+## 0.1.0 — 2026-09-28
 
 The first implementation of the interface published as 0.0.1: both
 forms read and written, with the bytes Python's plistlib writes.
+
+Four expectations in the XML suite are corrected: the offsets 29, 27 and
+30 of three refusals, and 99 705 600 seconds for 2004-02-29T00:00:00Z,
+which is what Python's plistlib reads.
 
 ### Changed
 
@@ -22,7 +26,7 @@ These change the interface's declarations, so a program written against
   depth, and answers any other value unchanged.
 - `plistbin.validate` reads the values as `read` does; it no longer
   claims to build none.
-- The dependency is xml-nv `^0.1.0`, and the toolchain floor is 0.13.0.
+- The dependency is xml-nv `^0.1.0`, and the toolchain floor is 0.14.0.
 
 ### Behaviour the interface left open
 

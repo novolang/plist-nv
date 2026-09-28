@@ -42,16 +42,16 @@ fn test_the_root_and_its_one_value() [io]
     test.assert_eq(code(plistxml.read("<plist>x<true/></plist>")), "bad-text")
     let doc = xmltree.build(wrap("<string>x</string>"))
     test.assert(plistxml.value_at(doc, 2) == Ok(PlistString("x")))
-    test.assert(plistxml.value_at(doc, 3) == Err(PlistBadRoot(32, "not an element")))
+    test.assert(plistxml.value_at(doc, 3) == Err(PlistBadRoot(29, "not an element")))
     test.assert(plistxml.value_at(doc, 1) == Ok(PlistString("x")))
 
 @test
 fn test_what_a_container_may_hold() [io]
-    test.assert(read("<dict>junk<key>a</key><true/></dict>") == Err(PlistBadText(26, "dict", "junk")))
+    test.assert(read("<dict>junk<key>a</key><true/></dict>") == Err(PlistBadText(27, "dict", "junk")))
     test.assert(read("<dict><!-- a note --><key>a</key><true/><?pi x?></dict>")
                 == Ok(plistvalue.dict_of([plistvalue.entry("a", PlistBool(true))])))
     test.assert(read("<array> <true/> </array>") == Ok(PlistArray([PlistBool(true)])))
-    test.assert(read("<string>a<b/></string>") == Err(PlistUnknownElement(29, "b")))
+    test.assert(read("<string>a<b/></string>") == Err(PlistUnknownElement(30, "b")))
     test.assert(read("<key>a</key>") == Err(PlistUnknownElement(21, "key")))
     test.assert(read("<dict><string>a</string></dict>")
                 == Err(PlistBadDictShape(27, "a string where a key belongs")))
@@ -94,7 +94,7 @@ fn big(h: Str) -> PlistValue
 fn test_dates_in_every_spelling() [io]
     let cases = [("2001Z", 0.0), ("2001-02Z", 2678400.0), ("2001-01-02T03Z", 97200.0),
                  ("2001-01-01T00:00:00+01:00", 0.0 - 3600.0), ("2001-01-01T00:00:00-01:30", 5400.0),
-                 ("2004-02-29T00:00:00Z", 100915200.0), ("1970-01-01T00:00:00Z", 0.0 - 978307200.0)]
+                 ("2004-02-29T00:00:00Z", 99705600.0), ("1970-01-01T00:00:00Z", 0.0 - 978307200.0)]
     for c in cases
         test.case(c.0)
         test.assert(plistxml.date_seconds(c.0) == Ok(c.1))
