@@ -5,6 +5,12 @@ All notable changes to plist-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## Unreleased
+
+### Fixed
+
+- A binary property list whose shared containers expand past the object limit when each reference is followed is refused, and the XML writer refuses a date outside the range a calendar date can spell instead of overflowing.
+
 ## 0.1.0 — 2026-09-28
 
 The first implementation of the interface published as 0.0.1: both

@@ -160,7 +160,9 @@ pub fn element_names() -> [Str] []
 // `"2001-01-01T00:00:00Z"` for zero.  Always UTC with a `Z` and whole
 // seconds, as Apple's writer and plistlib write it.  A fractional part
 // is dropped, rounding towards the earlier second, so a date with one
-// does not survive a round trip through the XML form.
+// does not survive a round trip through the XML form.  The argument is
+// within a million billion seconds of the reference instant; `write`
+// refuses a date outside that range, and NaN.
 //
 // ```novo
 // use plistxml
@@ -532,7 +534,10 @@ fn write_value(v: PlistValue, level: Int, var lines: [Str]) -> Result<Int, Plist
                 return Err(PlistBadIntegerWidth(0, bytes.len(b)))
             list.push(lines, tabs + "<integer>${big_decimal(b)}</integer>")
         PlistReal(f)       => list.push(lines, tabs + "<real>${real_text(f)}</real>")
-        PlistDate(t)       => list.push(lines, tabs + "<date>${date_text(t)}</date>")
+        PlistDate(t)       =>
+            if not (t >= -1.0e15 and t <= 1.0e15)
+                return Err(PlistNoXmlSpelling("date beyond the calendar"))
+            list.push(lines, tabs + "<date>${date_text(t)}</date>")
         PlistString(t)     => list.push(lines, tabs + "<string>" + escaped(t)! + "</string>")
     Ok(0)
 

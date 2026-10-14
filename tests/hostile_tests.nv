@@ -1,0 +1,53 @@
+// tests/hostile_tests.nv — dates no calendar can print.
+
+use std.test
+use std.str
+use plistvalue
+use plistbin
+use plisterror
+use plistxml
+
+fn refused(t: Float) -> Bool
+    match plistxml.write(PlistDate(t))
+        Ok(_)  => false
+        Err(_) => true
+
+@test
+fn test_a_date_of_a_huge_magnitude_is_refused_by_the_xml_writer() [io]
+    test.assert(refused(1.0e300))
+    test.assert(refused(-1.0e300))
+    test.assert(refused(1.0e16))
+
+@test
+fn test_a_nan_date_is_refused_by_the_xml_writer() [io]
+    test.assert(refused(0.0 / 0.0))
+
+@test
+fn test_an_ordinary_date_still_writes() [io]
+    match plistxml.write(PlistDate(0.0))
+        Ok(t)  => test.assert(str.contains(t, "<date>2001-01-01T00:00:00Z</date>"))
+        Err(e) => test.fail(e.message())
+
+fn hex(s: Str) -> Bytes
+    bytes.from_hex(s) ?? bytes.zeros(0)
+
+// Forty arrays, each holding the next one twice: read once per object, it is
+// 2^40 values when every reference is followed.
+fn doubled40() -> Str
+    "62706c6973743030a20101a20202a20303a20404a20505a20606a20707a20808a20909a20a0aa20b0ba20c0ca20d0da20e0ea20f0fa21010a21111a21212a21313a21414a21515a21616a21717a21818a21919a21a1aa21b1ba21c1ca21d1da21e1ea21f1fa22020a22121a22222a22323a22424a22525a22626a22727a228281001080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d800000000000000101000000000000002900000000000000000000000000000082"
+
+@test
+fn test_a_shared_container_that_expands_past_the_object_limit_is_refused() [io]
+    match plistbin.read(hex(doubled40()))
+        Ok(_)  => test.fail("2^40 values were accepted")
+        Err(e) => test.assert_eq(plisterror.code_of(e), "bad-trailer")
+
+@test
+fn test_a_small_shared_container_still_reads_and_writes() [io]
+    let src = hex("62706c6973743030a20101a20202a203031001080b0e110000000000000101000000000000000400000000000000000000000000000013")
+    match plistbin.read(src)
+        Err(e) => test.fail(e.message())
+        Ok(v)  =>
+            match plistbin.write(v)
+                Err(e) => test.fail(e.message())
+                Ok(b)  => test.assert(bytes.len(b) > 8)

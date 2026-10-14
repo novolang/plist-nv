@@ -67,7 +67,9 @@ struct PlistLimits
     // is attacker-controlled, so a reader handed an object count larger
     // than it is willing to hold should refuse before it allocates.
     max_bytes: Int
-    // The largest number of objects the reader will accept.
+    // The largest number of objects the reader will accept, and the
+    // largest number of values the root holds when each reference to a
+    // shared object is counted.
     max_objects: Int
 
 // The limits a reader uses when none are given: sixty-four levels, a
@@ -311,21 +313,23 @@ fn index_with(src: Bytes, limits: PlistLimits) -> Result<PlistBinIndex, PlistFau
 fn walk_from(src: Bytes, ix: PlistBinIndex, limits: PlistLimits,
              ref: Int) -> Result<PlistValue, PlistFault>
     var done: [?PlistValue] = []
+    var sizes: [Int] = []
     for _ in 0..ix.object_count
         list.push(done, None)
-    walk(src, ix, limits, ref, [], done)
+        list.push(sizes, 1)
+    walk(src, ix, limits, ref, [], done, sizes)
 
 // The value of object `ref`, which is not on `path`.  `done` holds
 // every object already read, so an object reached twice is read once.
 fn walk(src: Bytes, ix: PlistBinIndex, limits: PlistLimits, ref: Int, path: [Int],
-        var done: [?PlistValue]) -> Result<PlistValue, PlistFault>
+        var done: [?PlistValue], var sizes: [Int]) -> Result<PlistValue, PlistFault>
     if let Some(v) = done[ref]
         return Ok(v)
     let at = ix.offsets[ref]
     let hi = byte(src, at) >> 4
     var v = PlistBool(false)
     if hi == 10 or hi == 12 or hi == 13
-        v = collection(src, ix, limits, ref, path, done)!
+        v = collection(src, ix, limits, ref, path, done, sizes)!
     else
         v = scalar(src, ix, at)!
     done[ref] = Some(v)
@@ -333,7 +337,7 @@ fn walk(src: Bytes, ix: PlistBinIndex, limits: PlistLimits, ref: Int, path: [Int
 
 // An array, a set or a dictionary: object `ref`, with its elements.
 fn collection(src: Bytes, ix: PlistBinIndex, limits: PlistLimits, ref: Int, path: [Int],
-              var done: [?PlistValue]) -> Result<PlistValue, PlistFault>
+              var done: [?PlistValue], var sizes: [Int]) -> Result<PlistValue, PlistFault>
     let at = ix.offsets[ref]
     let hi = byte(src, at) >> 4
     let (n, body) = length(src, ix, at)!
@@ -346,6 +350,7 @@ fn collection(src: Bytes, ix: PlistBinIndex, limits: PlistLimits, ref: Int, path
         return Err(PlistDepthExceeded(at, list.len(path) + 1))
     let inner = list.concat(path, [ref])
     var items: [PlistValue] = []
+    var expanded = 1
     for i in 0..n * per
         let where = body + i * ix.ref_width
         let child = uint(src, where, ix.ref_width)
@@ -353,7 +358,13 @@ fn collection(src: Bytes, ix: PlistBinIndex, limits: PlistLimits, ref: Int, path
             return Err(PlistBadReference(where, child))
         if list.contains(inner, child)
             return Err(PlistCycle(where, child))
-        list.push(items, walk(src, ix, limits, child, inner, done)!)
+        list.push(items, walk(src, ix, limits, child, inner, done, sizes)!)
+        // A shared container is read once but counted at each reference, so the tree a writer
+        // or a walker follows from the root stays within the object limit.
+        expanded += sizes[child]
+        if expanded > limits.max_objects
+            return Err(PlistBadTrailer("the objects expand to more than ${limits.max_objects} values when each reference is followed"))
+    sizes[ref] = expanded
     if hi == 10
         return Ok(PlistArray(items))
     if hi == 12
