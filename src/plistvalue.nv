@@ -18,6 +18,7 @@
 
 use std.list
 use std.bytes
+use plisterror
 
 // A property list value.
 //
@@ -365,7 +366,7 @@ pub fn as_cfuid_dict(v: PlistValue) -> PlistValue []
 // ```
 pub fn xml_blockers(v: PlistValue) -> [Str] []
     var out: [Str] = []
-    blockers_into(v, "", out)
+    blockers_into(v, "", var out)
     out
 
 // The fault for a value of the wrong kind.
@@ -384,10 +385,10 @@ fn blockers_into(v: PlistValue, at: Str, var out: [Str])
         PlistUid(_)    => list.push(out, shown_path(at))
         PlistArray(xs) =>
             for i in 0..list.len(xs)
-                blockers_into(xs[i], "${at}/${i}", out)
+                blockers_into(xs[i], "${at}/${i}", var out)
         PlistDict(es)  =>
             for e in es
-                blockers_into(e.value, "${at}/${e.key}", out)
+                blockers_into(e.value, "${at}/${e.key}", var out)
         _              => ()
 
 // A path as it is reported: `/` for the root.

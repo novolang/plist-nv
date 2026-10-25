@@ -13,6 +13,7 @@ use std.bytes
 use plistvalue
 use plistbin
 use plistxml
+use plisterror
 
 // Which form a property list is in.
 //

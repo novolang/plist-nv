@@ -12,6 +12,7 @@ use std.float
 use plistbin
 use plistxml
 use plistfmt
+use plistvalue
 
 // A value as text that two values share exactly when they are equal,
 // reals and dates by their bits.

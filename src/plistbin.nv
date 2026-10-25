@@ -38,6 +38,7 @@ use std.list
 use std.str
 use std.float
 use plistvalue
+use plisterror
 
 // The trailer and the offset table, without any value built.
 pub struct PlistBinIndex
@@ -253,7 +254,7 @@ pub fn object_count(v: PlistValue) -> Result<Int, PlistFault> []
     var objs: [PlistValue] = []
     var kids: [[Int]] = []
     let seen = HashMap.new()
-    flatten(v, true, objs, kids, seen)
+    flatten(v, true, var objs, var kids, seen)
     Ok(list.len(objs))
 
 // The fault in a buffer's first eight bytes, or `None` when they are
@@ -317,7 +318,7 @@ fn walk_from(src: Bytes, ix: PlistBinIndex, limits: PlistLimits,
     for _ in 0..ix.object_count
         list.push(done, None)
         list.push(sizes, 1)
-    walk(src, ix, limits, ref, [], done, sizes)
+    walk(src, ix, limits, ref, [], var done, var sizes)
 
 // The value of object `ref`, which is not on `path`.  `done` holds
 // every object already read, so an object reached twice is read once.
@@ -329,7 +330,7 @@ fn walk(src: Bytes, ix: PlistBinIndex, limits: PlistLimits, ref: Int, path: [Int
     let hi = byte(src, at) >> 4
     var v = PlistBool(false)
     if hi == 10 or hi == 12 or hi == 13
-        v = collection(src, ix, limits, ref, path, done, sizes)!
+        v = collection(src, ix, limits, ref, path, var done, var sizes)!
     else
         v = scalar(src, ix, at)!
     done[ref] = Some(v)
@@ -358,7 +359,7 @@ fn collection(src: Bytes, ix: PlistBinIndex, limits: PlistLimits, ref: Int, path
             return Err(PlistBadReference(where, child))
         if list.contains(inner, child)
             return Err(PlistCycle(where, child))
-        list.push(items, walk(src, ix, limits, child, inner, done, sizes)!)
+        list.push(items, walk(src, ix, limits, child, inner, var done, var sizes)!)
         // A shared container is read once but counted at each reference, so the tree a writer
         // or a walker follows from the root stays within the object limit.
         expanded += sizes[child]
@@ -523,7 +524,7 @@ fn write_graph(v: PlistValue, shared: Bool) -> Result<Bytes, PlistFault>
     var objs: [PlistValue] = []
     var kids: [[Int]] = []
     let seen = HashMap.new()
-    flatten(v, shared, objs, kids, seen)
+    flatten(v, shared, var objs, var kids, seen)
     for o in objs
         if let Some(f) = encode_fault(o)
             return Err(f)
@@ -561,7 +562,7 @@ fn flatten(v: PlistValue, shared: Bool, var objs: [PlistValue], var kids: [[Int]
     list.push(kids, [])
     var refs: [Int] = []
     for c in elements_of(v)
-        list.push(refs, flatten(c, shared, objs, kids, seen))
+        list.push(refs, flatten(c, shared, var objs, var kids, seen))
     kids[r] = refs
     r
 

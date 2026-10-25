@@ -29,6 +29,7 @@ use std.float
 use xmltree
 use xmlerror
 use plistvalue
+use plisterror
 
 // Whether the text begins as an XML property list: an `<?xml?>`
 // declaration, a DOCTYPE, or a `<plist` element, after any leading
@@ -125,7 +126,7 @@ pub fn write(v: PlistValue) -> Result<Str, PlistFault> []
 // For embedding one property list inside another XML document.
 pub fn write_fragment(v: PlistValue) -> Result<Str, PlistFault> []
     var lines: [Str] = ["<plist version=\"1.0\">"]
-    write_value(v, 0, lines)!
+    write_value(v, 0, var lines)!
     list.push(lines, "</plist>")
     Ok(str.join(lines, "\n") + "\n")
 
@@ -504,7 +505,7 @@ fn write_value(v: PlistValue, level: Int, var lines: [Str]) -> Result<Int, Plist
             list.push(lines, tabs + "<dict>")
             for e in es
                 list.push(lines, tabs + "\t<key>" + escaped(e.key)! + "</key>")
-                write_value(e.value, level + 1, lines)!
+                write_value(e.value, level + 1, var lines)!
             list.push(lines, tabs + "</dict>")
         PlistArray(xs)     =>
             if list.len(xs) == 0
@@ -512,7 +513,7 @@ fn write_value(v: PlistValue, level: Int, var lines: [Str]) -> Result<Int, Plist
                 return Ok(0)
             list.push(lines, tabs + "<array>")
             for x in xs
-                write_value(x, level + 1, lines)!
+                write_value(x, level + 1, var lines)!
             list.push(lines, tabs + "</array>")
         PlistData(b)       =>
             list.push(lines, tabs + "<data>")
